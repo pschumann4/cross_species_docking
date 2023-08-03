@@ -3,8 +3,9 @@
 # to create the .pdbqt files for the rigid and flexible residues.                                  #
 # requires: prepare_flexreceptor.py script, flex_residues.txt file, and a directory of PDB files   #
 # returns: .pdbqt files for the rigid and flexible residues for each PDB file in the directory     #
-# 'pythonsh' is used to run the script because it requires Python 2.7 and so this will need to be  #
-# added to the PATH prior to running the script.                                                   #
+# The prepare_flexreceptor.py script needs to be ran in python v2.7 and the user must have         #
+# MGL Tools intalled on their computer. "python" is the default command for python v2.7 once MGL   #
+# Tools is installed.                                                                              #
 ####################################################################################################
 
 import os
