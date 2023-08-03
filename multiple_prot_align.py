@@ -442,17 +442,17 @@ def multiple_prot_align():
             return
     os.chdir(pwd)
 
-    # Check for .ent files and rename them to .pdb
-    if '.ent' in os.listdir(pwd):
-        print('The ".ent" file extensions will be updated to ".pdb".')
+    # Check if any file ends with .ent
+    if any(file.endswith('.ent') for file in os.listdir(pwd)):
+        print('\nThe ".ent" file extensions will be updated to ".pdb".')
         for pdb_file in os.listdir(pwd):
             if pdb_file.endswith('.ent'):
-                os.rename(pdb_file, pdb_file.replace('.ent', '.pdb'))
-                if pdb_file.startswith('pdb'):
-                    os.rename(pdb_file, pdb_file[3:])
-        for pdb_file in os.listdir(pwd):
-            if not pdb_file.endswith('.pdb'):
-                print('Warning: {} does not appear to be a PDB file. The file will be skipped.'.format(pdb_file))
+                new_name = pdb_file.replace('.ent', '.pdb')
+                os.rename(pdb_file, new_name)
+    for pdb_file in os.listdir(pwd):
+        if pdb_file.startswith('pdb'):
+            new_name = pdb_file[3:]
+            os.rename(pdb_file, new_name)
 
     # Save copies of the PDB files
     print('Saving copies of the original PDB files to "original_structures" folder...\n')
@@ -577,7 +577,7 @@ def multiple_prot_align():
     for file in os.listdir():
         if file.endswith('.pdb') and not file.endswith('_modified.pdb'):
             os.remove(file)
-    print('Done!')
+    print('DONE!')
 
 ####################
 # Run the function #
