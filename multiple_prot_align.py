@@ -448,6 +448,8 @@ def multiple_prot_align():
         for pdb_file in os.listdir(pwd):
             if pdb_file.endswith('.ent'):
                 os.rename(pdb_file, pdb_file.replace('.ent', '.pdb'))
+                if pdb_file.startswith('pdb'):
+                    os.rename(pdb_file, pdb_file[3:])
         for pdb_file in os.listdir(pwd):
             if not pdb_file.endswith('.pdb'):
                 print('Warning: {} does not appear to be a PDB file. The file will be skipped.'.format(pdb_file))
