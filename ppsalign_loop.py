@@ -1,14 +1,19 @@
 ####################################################################################################
 # This function will take a file directory of .poc files as an input and run PPSalign on each.     #
-# The user will need to set their current working directory to the directory containing the        #
-# .poc files and have the PPSalign executable in their PATH prior to running this function.        #
+# The user will need to set "PPSalign" as an environment variable.                                 #
 ####################################################################################################
 
 import os
 
 def ppsalign_loop():
     # Get the path to the directory containing the .poc files
-    poc_dir = os.getcwd()
+    poc_dir = input('Enter the path to the directory containing the .poc files: ')
+    # Check if the path exists and if not, ask for it again
+    while not os.path.exists(poc_dir):
+        poc_dir = input('That path does not appear to exist.\nPlease enter the path to the directory containing the .poc files: ')
+    # Change the working directory to the directory containing the .poc files
+    os.chdir(poc_dir)
+    # Get the list of .poc files in the directory
     poc_files = os.listdir(poc_dir)
 
     # Specify name of template .poc file
