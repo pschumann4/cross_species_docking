@@ -555,7 +555,7 @@ def multiple_prot_align():
     # Run the trim_pdb function
     print('Trimming the PDB files with respect to the reference...\n')
     trim_pdb(f'{ref[:-4]}_modified.pdb', pwd)
-
+ # hello
     # Run the align_structures function
     print('Aligning structures to the reference...')
     align_structures(pwd, f'{ref[:-4]}_modified.pdb')
