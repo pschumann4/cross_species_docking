@@ -4,8 +4,10 @@
  The output will be a text file containing the RMSD values for each PDB file.                     
 """
 import os
+import shutil
 
 import numpy as np
+import pandas as pd
 
 
 def check_exit(input_str):
@@ -168,9 +170,89 @@ def ligand_rmsd():
     # Check that the text file was created
     if os.path.exists("ligand_rmsd.txt"):
         print(
-            "The ligand RMSD values were written to ligand_rmsd.txt in your working directory."
+            "\nThe ligand RMSD values were written to ligand_rmsd.txt in your working directory."
         )
-    return
+
+    # Determine best and worst poses?
+    filter_poses = input(
+        "\nWould you like to sort the models as " "best/worst based on RMSD? (y/n): "
+    )
+    filter_poses = filter_poses.lower()
+    while filter_poses not in ["y", "n"]:
+        filter_poses = input("Please enter y or n: ")
+        filter_poses = filter_poses.lower()
+    if filter_poses == "y":
+        lig_rmsd_file = "ligand_rmsd.txt"
+        # Initialize a df to hold the ligand RMSD values, species, and model
+        lig_rmsd_df = pd.DataFrame(columns=["lig_rmsd", "species", "model"])
+        # Read the ligand RMSD file
+        with open(lig_rmsd_file, "r") as f:
+            lines = f.readlines()
+            lines = [line.split() for line in lines]
+            lig_rmsds = [line[1] for line in lines[2:]]
+            species = [line[0].split("_")[0] for line in lines[2:]]
+            # Find the model number by selecting the number after the word "model"
+            model = [line[0].split("model")[1].split(":")[0] for line in lines[2:]]
+        # Add the ligand RMSD values to the dataframe
+        lig_rmsd_df["lig_rmsd"] = lig_rmsds
+        lig_rmsd_df["species"] = species
+        lig_rmsd_df["model"] = model
+        # For each species in the dataframe, find the best and worst pose
+        best_poses = []
+        worst_poses = []
+        for species in lig_rmsd_df["species"].unique():
+            species_df = lig_rmsd_df[lig_rmsd_df["species"] == species]
+            best_pose = species_df[
+                species_df["lig_rmsd"] == species_df["lig_rmsd"].min()
+            ]
+            worst_pose = species_df[
+                species_df["lig_rmsd"] == species_df["lig_rmsd"].max()
+            ]
+            best_poses.append(best_pose)
+            worst_poses.append(worst_pose)
+        # Concatenate the best and worst poses into a single dataframe
+        best_poses = pd.concat(best_poses)
+        worst_poses = pd.concat(worst_poses)
+        # Remove the index from the best and worst poses df
+        best_poses.reset_index(drop=True, inplace=True)
+        worst_poses.reset_index(drop=True, inplace=True)
+        # Convert the lig_rmsd column to a float
+        best_poses["lig_rmsd"] = best_poses["lig_rmsd"].astype(float)
+        worst_poses["lig_rmsd"] = worst_poses["lig_rmsd"].astype(float)
+        # Convert the pose column to an integer
+        best_poses["model"] = best_poses["model"].astype(int)
+        worst_poses["model"] = worst_poses["model"].astype(int)
+
+        # Write the best and worst poses to a XLSX file
+        with pd.ExcelWriter("best_and_worst_poses.xlsx") as writer:
+            best_poses.to_excel(writer, sheet_name="best_poses")
+            worst_poses.to_excel(writer, sheet_name="worst_poses")
+        print(
+            "\nThe best and worst poses have been written "
+            'to "best_and_worst_poses.xlsx".'
+        )
+
+        # Create a folder called "filtered_models" to hold the best and worst poses
+        filtered_models_dir = os.path.join(pwd, "filtered_models")
+        if not os.path.exists(filtered_models_dir):
+            os.mkdir(filtered_models_dir)
+
+        # Copy the best and worst poses to the "filtered_models" folder
+        for model in os.listdir(pwd):
+            if model.endswith(".pdb") and "model" in model:
+                # Get the species and model number from the model name
+                species = model.split("_")[0]
+                model_num = model.split("model")[1].split(".pdb")[0]
+                for pose in best_poses.itertuples():
+                    if pose.species == species and pose.model == int(model_num):
+                        shutil.copy(model, filtered_models_dir)
+                for pose in worst_poses.itertuples():
+                    if pose.species == species and pose.model == int(model_num):
+                        shutil.copy(model, filtered_models_dir)
+
+        print(
+            '\nDONE! The best and worst poses have been copied to the "filtered_models" folder.'
+        )
 
 
 if __name__ == "__main__":
