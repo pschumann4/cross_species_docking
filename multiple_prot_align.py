@@ -255,27 +255,17 @@ def align_structures(pwd, ref):
         print("There are no other pdb files in the working directory.")
         return
     # Initialize PyMOL
-    rm_het = input(
-        "Would you like to remove heteroatoms from the reference structure? (y/n) "
-    )
-    rm_het = str(rm_het).lower()
     pymol.finish_launching()
     # Load the reference structure
     cmd.load(ref, "ref")
     # Remove waters
     cmd.remove("resn HOH")
-    # Remove heteroatoms, if requested
-    if rm_het == "y":
-        cmd.remove("hetatm")
-    if rm_het == "n":
-        pass
-    if rm_het != "y" and rm_het != "n":
-        print(
-            "Invalid input. Heteroatoms will not be removed "
-            "from the reference structure."
-        )
     # Remove hydrogens
     cmd.remove("hydro")
+    # Save the reference structure as a PDB file using the original name followed by "_ref"
+    cmd.save(f"ref_{ref[:-4]}.pdb", "ref", 1)
+    # Remove heteroatoms
+    cmd.remove("hetatm")
     # Save the reference structure as a PDB file using the original name
     cmd.save(ref, "ref", 1)
     # Create a dictionary to store the RMSD values
