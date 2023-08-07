@@ -1,53 +1,53 @@
-####################################################################################  
-# This function will essentially just replace the residue positions of the target  #
-# with the reference given that the specified residues are identical. However, it  #
-# will also adjust the atom positions by calculating the difference between the    #
-# reference and target backbone atoms and then adding that difference to the       #
-# target atoms.                                                                    #
-####################################################################################
-
-############################
-# Import required packages #
-############################
+"""
+ This function will essentially just replace the residue positions of the target  
+ with the reference given that the specified residues are identical. However, it  
+ will also adjust the atom positions by calculating the difference between the    
+ reference and target backbone atoms and then adding that difference to the       
+ target atoms.    
+"""
 
 import os
-import numpy as np
 import string
 
-######################
-# Load all functions #
-######################
+import numpy as np
+
 
 def modify_res_pos():
+    """
+    Main function
+    """
     # Prompt user for the working directory
-    wd = input('Enter the working directory: ')
+    wd = input("Enter the working directory: ")
     # Check that the directory exists
     while not os.path.exists(wd):
-        print('The working directory does not exist.')
-        wd = input('Enter the working directory: ')
+        print("The working directory does not exist.")
+        wd = input("Enter the working directory: ")
     # Update the working directory
     os.chdir(wd)
 
     # Prompt user for the reference PDB file
-    pdb_ref = input('Enter the name of the reference PDB file: ')
-    if not pdb_ref.endswith('.pdb'):
-        pdb_ref += '.pdb'
+    pdb_ref = input("Enter the name of the reference PDB file: ")
+    if not pdb_ref.endswith(".pdb"):
+        pdb_ref += ".pdb"
 
     # Read in the reference PDB file
-    with open(pdb_ref, 'r') as f:
+    with open(pdb_ref, "r") as f:
         pdb_ref = f.readlines()
-    
+
     # Prompt user for the target PDB file
     while True:
-        pdb_tar = input('Enter the name of the target PDB file: ')
-        if not pdb_tar.endswith('.pdb'):
-            pdb_tar += '.pdb'
+        pdb_tar = input("Enter the name of the target PDB file: ")
+        if not pdb_tar.endswith(".pdb"):
+            pdb_tar += ".pdb"
         # Get the name of the target PDB file by removing the extension
-        pdb_tar_name = pdb_tar.split('.')[0]
+        pdb_tar_name = pdb_tar.split(".")[0]
 
         # Prompt user for the residues to be modified
-        residues = input('Enter a comma separated list of the residue numbers to be modified (with or without residue IDs): ')
-        # Convert the comma-separated list of residues to a list of residues as integers
+        residues = input(
+            "Enter a comma separated list of the residue numbers to be "
+            "modified (with or without residue IDs): "
+        )
+        # Convert the comma-separated list of res to a list of res as ints
         if ", " in residues:
             residues = residues.split(", ")
         elif "," in residues:
@@ -61,13 +61,13 @@ def modify_res_pos():
         new_pdb = []
 
         # Read in the PDB files
-        with open(pdb_tar, 'r') as f:
+        with open(pdb_tar, "r") as f:
             pdb_tar = f.readlines()
         for res in residues:
             ref_coords = {}
             # Extract the coordinates of the atoms in the ref PDB
             for line in pdb_ref:
-                if line.startswith('ATOM'):
+                if line.startswith("ATOM"):
                     if int(line[22:26]) == res:
                         atom = line[12:16].strip()
                         x = float(line[30:38])
@@ -78,7 +78,7 @@ def modify_res_pos():
             # Extract the coordinates of the atoms in the target PDB
             tar_coords = {}
             for line in pdb_tar:
-                if line.startswith('ATOM'):
+                if line.startswith("ATOM"):
                     if int(line[22:26]) == res:
                         atom = line[12:16].strip()
                         x = float(line[30:38])
@@ -86,9 +86,16 @@ def modify_res_pos():
                         z = float(line[46:54])
                         tar_coords[atom] = np.array([x, y, z])
 
-            # Calculate the centroids of the backbone atoms in the target and reference PDBs
-            ref_centroid = np.mean([ref_coords['N'], ref_coords['CA'], ref_coords['C'], ref_coords['O']], axis=0)
-            tar_centroid = np.mean([tar_coords['N'], tar_coords['CA'], tar_coords['C'], tar_coords['O']], axis=0)
+            # Calculate the centroids of the backbone atoms in the 
+            # target and reference PDBs
+            ref_centroid = np.mean(
+                [ref_coords["N"], ref_coords["CA"], ref_coords["C"], ref_coords["O"]],
+                axis=0,
+            )
+            tar_centroid = np.mean(
+                [tar_coords["N"], tar_coords["CA"], tar_coords["C"], tar_coords["O"]],
+                axis=0,
+            )
             # Calculate the difference between the centroids
             diff = tar_centroid - ref_centroid
 
@@ -102,36 +109,51 @@ def modify_res_pos():
                 for i in range(len(ref_coords[atom])):
                     ref_coords[atom][i] = round(ref_coords[atom][i], 3)
                     ref_coords[atom][i] = str(ref_coords[atom][i])
-                    # Check that each value has 3 decimal places, if not, add a 0 to the end
-                    if len(ref_coords[atom][i].split('.')[1]) < 3:
-                        ref_coords[atom][i] += '0'
+                    # Check that each value has 3 decimal places, if not, 
+                    # add a 0 to the end
+                    if len(ref_coords[atom][i].split(".")[1]) < 3:
+                        ref_coords[atom][i] += "0"
                     # Modify the strings so that they are 8 characters long
                     while len(ref_coords[atom][i]) < 8:
-                        ref_coords[atom][i] = ' ' + ref_coords[atom][i]
+                        ref_coords[atom][i] = " " + ref_coords[atom][i]
 
-            # Replace the coordinates of the atoms in the target PDB with the coordinates from the ref_coords dictionary
+                # Replace the coordinates of the atoms in the target PDB with 
+                # the coordinates from the ref_coords dictionary
                 for line in pdb_tar:
-                    if line.startswith('ATOM'):
+                    if line.startswith("ATOM"):
                         if int(line[22:26]) == res and line[12:16].strip() == atom:
-                            # Replace the coordinates of that line with the coordinates from the ref_coords dictionary
-                            line = line[:30] + "{:>8}".format(ref_coords[atom][0]) + "{:>8}".format(ref_coords[atom][1]) + "{:>8}".format(ref_coords[atom][2]) + line[54:]
+                            # Replace the coordinates of that line with the 
+                            # coordinates from the ref_coords dictionary
+                            line = (
+                                line[:30]
+                                + "{:>8}".format(ref_coords[atom][0])
+                                + "{:>8}".format(ref_coords[atom][1])
+                                + "{:>8}".format(ref_coords[atom][2])
+                                + line[54:]
+                            )
                             new_lines.append(line)
-                            
-        # Overwrite the corresponding lines in the target PDB with the lines in the new_pdb list
+
+        # Overwrite the corresponding lines in the target PDB with the 
+        # lines in the new_pdb list
         for line in pdb_tar:
-            if line.startswith('ATOM'):
+            if line.startswith("ATOM"):
                 if int(line[22:26]) in residues:
                     for new_line in new_lines:
-                        if new_line[22:26] == line[22:26] and new_line[12:16].strip() == line[12:16].strip():
+                        if (
+                            new_line[22:26] == line[22:26]
+                            and new_line[12:16].strip() == line[12:16].strip()
+                        ):
                             line = new_line
             new_pdb.append(line)
 
         # Write the new PDB file using the basename of the target PDB file
-        with open(pdb_tar_name + '_mod.pdb', 'w') as f:
+        with open(pdb_tar_name + "_mod.pdb", "w") as f:
             for line in new_pdb:
                 f.write(line)
-        repeat = input('Would you like to modify another PDB file? (y/n): ')
-        if repeat == 'n':
+        repeat = input("Would you like to modify another PDB file? (y/n): ")
+        if repeat == "n":
             break
 
-modify_res_pos()
+
+if __name__ == "__main__":
+    modify_res_pos()

@@ -1,37 +1,50 @@
-####################################################################################################
-# This script will create a summary file containing the binding affinity, PPS-Score, ligand RMSD,  #
-# and PLIF Tanimoto values for each binding model. The user will be prompted to enter the          #
-# following information:                                                                           #
-#                                                                                                  #
-# 1. The directory containing the AutoDock Vina log files                                          #
-# 2. The name of the ligand, which should match the suffix of the log files                        #
-# 3. The file path for the PPS-Score file                                                          #
-# 4. The file path for the ligand RMSD file                                                        #
-# 5. The file path for the PLIF Tanimoto matrix file                                               #
-# 6. The name of the reference model (as listed in the matrix)                                     #
-# 7. The output directory                                                                          #
-#                                                                                                  #
-# The summary file will be written to the specified output directory.                              #
-####################################################################################################
-
-############################
-# Import required packages #
-############################
+"""
+ This script will create a summary file containing the binding affinity, 
+ PPS-Score, ligand RMSD, and PLIF Tanimoto values for each binding model. 
+ The user will be prompted to enter the following information:                                                                           
+                                                                                                  
+ 1. The directory containing the AutoDock Vina log files                                          
+ 2. The name of the ligand, which should match the suffix of the log files                        
+ 3. The file path for the PPS-Score file                                                          
+ 4. The file path for the ligand RMSD file                                                        
+ 5. The file path for the PLIF Tanimoto matrix file                                               
+ 6. The name of the reference model (as listed in the matrix)                                     
+ 7. The output directory                                                                          
+                                                                                                  
+ The summary file will be written to the specified output directory.                              
+"""
 
 import os
+
 import pandas as pd
 
-#################
-# Load function #
-#################
 
 def get_summary():
+    """
+    Main function.
+    Prompts user for the necessary information and creates the summary file.
+    """
     # Initialize empty dataframe to store the summary data
-    summary_df = pd.DataFrame(columns=["binding_model", "species", "pose", "binding_affinity", "ppsscore", "lig_rmsd", "plif_tanimoto"])
+    summary_df = pd.DataFrame(
+        columns=[
+            "binding_model",
+            "species",
+            "pose",
+            "binding_affinity",
+            "ppsscore",
+            "lig_rmsd",
+            "plif_tanimoto",
+        ]
+    )
     # Prompt user for directory containing the AutoDock Vina log files
-    vina_logs = input("Enter the file directory contating the AutoDock Vina log files: ")
+    vina_logs = input(
+        "Enter the file directory contating the AutoDock Vina log files: "
+    )
     # Prompt user for ligand name
-    ligand = input("Enter the name of the ligand, which should match the suffix of the log files: ")
+    ligand = input(
+        "Enter the name of the ligand, which should match "
+        "the suffix of the log files: "
+    )
     # Initialize lists to hold binding affinities, poses, and species names
     binding_affinities = []
     poses = []
@@ -53,7 +66,8 @@ def get_summary():
                         binding_affinities.append(binding_affinity)
                         pose = file.split("_")[-1].split(".")[0]
                         poses.append(pose)
-                        # Get the species name by splitting the file name at the underscore
+                        # Get the species name by splitting the file name 
+                        # at the underscore
                         species_name = file.split("_")[0]
                         # Append the species name to the list
                         species.append(species_name)
@@ -81,7 +95,7 @@ def get_summary():
     with open(ppsscore_file, "r") as f:
         lines = f.readlines()
         line_counter = 2
-        for line in lines[2:file_count + 2]:
+        for line in lines[2 : file_count + 2]:
             pps_line = lines[line_counter]
             pps_line = pps_line.split()
             if len(pps_line) != 0:
@@ -109,11 +123,15 @@ def get_summary():
     print(summary_df)
 
     # Prompt user for the PLIF Tanimoto file
-    plif_tanimoto_file = input("Enter the file path for the PLIF Tanimoto matrix file: ")
+    plif_tanimoto_file = input(
+        "Enter the file path for the PLIF Tanimoto matrix file: "
+    )
     plif_tanimoto_file = plif_tanimoto_file.replace('"', "")
     plif_tanimoto_df = pd.read_csv(plif_tanimoto_file)
     # Prompt user for the name of the reference model
-    ref_model = input("Enter the name of the reference model (as listed in the matrix): ")
+    ref_model = input(
+        "Enter the name of the reference model (as listed in the matrix): "
+    )
     # Remove the column corresponding to the reference model
     plif_tanimoto_df = plif_tanimoto_df.drop(ref_model, axis=1)
     plif_tanimoto_df = plif_tanimoto_df.set_index(plif_tanimoto_df.columns[0])
@@ -131,6 +149,12 @@ def get_summary():
     # Write the dataframe to a csv file
     summary_df.to_csv(output_file, index=False)
     # Print a summary message to the user
-    print("The summary file ({}) has been created in the specified directory.".format(os.path.basename(output_file)))
+    print(
+        "The summary file ({}) has been created in the specified directory.".format(
+            os.path.basename(output_file)
+        )
+    )
 
-get_summary()
+
+if __name__ == "__main__":
+    get_summary()
