@@ -1,7 +1,10 @@
 """
- This script will calculate the RMSD between the ligand in a reference PDB file and the ligand in 
- a set of other PDB files.                                                                        
- The output will be a text file containing the RMSD values for each PDB file.                     
+ This script will calculate the RMSD between the ligand in a reference 
+ PDB file and the ligand in a set of other PDB files.                                                                        
+ The output will be a text file containing the RMSD values for each PDB file.
+ Additionally, if the user chooses to, the script will determine the best
+ and worst models according to the RMSD values and copy them to a new directory.
+ It can do this for both the model directory and the Vina output directory.                     
 """
 import os
 import shutil
@@ -53,7 +56,8 @@ def ligand_rmsd():
     # Check that the PDB file exists
     while not os.path.exists(ref):
         print(
-            "The pdb file you entered does not appear to exist. The entry is case sensitive."
+            "The pdb file you entered does not appear to exist. "
+            "The entry is case sensitive."
         )
         ref = input('Enter the name of the reference PDB file (or type "exit"): ')
         if not ref.endswith(".pdb"):
@@ -93,12 +97,14 @@ def ligand_rmsd():
             coords1.append([x, y, z])
     # Convert the list to a NumPy array
     coords1 = np.array(coords1)
-    # Create a dictionary to store the RMSD values using the base name of pdb2 as the key
+    # Create a dictionary to store the RMSD values using the base name of
+    # pdb2 as the key
     rmsd_dict = {}
 
     # Calculate the RMSDs between the reference ligand and all query ligands
     for file in os.listdir(pwd):
-        # Check if the file is a PDB file containing the word "model" and is not the reference PDB file
+        # Check if the file is a PDB file containing the word "model"
+        # and is not the reference PDB file
         if file.endswith(".pdb") and "model" in file and file != ref:
             # Get the base name of the PDB file
             base = os.path.basename(file)
@@ -136,7 +142,8 @@ def ligand_rmsd():
                         + ref
                         + " and "
                         + file
-                        + " are not identical.\nThis must be corrected before the RMSD can be calculated properly."
+                        + " are not identical.\nThis must be corrected before the "
+                        "RMSD can be calculated properly."
                     )
                     # Print the lists of atoms in each PDB file
                     print("Atoms in " + ref + ": " + str(atoms1))
@@ -170,7 +177,8 @@ def ligand_rmsd():
     # Check that the text file was created
     if os.path.exists("ligand_rmsd.txt"):
         print(
-            "\nThe ligand RMSD values were written to ligand_rmsd.txt in your working directory."
+            "\nThe ligand RMSD values were written to ligand_rmsd.txt "
+            "in your working directory."
         )
 
     # Determine best and worst poses?
@@ -251,8 +259,39 @@ def ligand_rmsd():
                         shutil.copy(model, filtered_models_dir)
 
         print(
-            '\nDONE! The best and worst poses have been copied to the "filtered_models" folder.'
+            "\nDONE! The best and worst poses have been copied "
+            'to the "filtered_models" folder.'
         )
+        filter_vina = input(
+            "\nWould you like to filter the Vina output according to RMSD "
+            "as well? (y/n): "
+        )
+        filter_vina = filter_vina.lower()
+        while filter_vina not in ["y", "n"]:
+            filter_vina = input("Please enter y or n: ")
+            filter_vina = filter_vina.lower()
+        if filter_vina == "y":
+            vina_logs = input("\nEnter the path to the Vina output logs: ")
+            while not os.path.exists(vina_logs):
+                vina_logs = input("Please enter a valid path: ")
+            os.chdir(vina_logs)
+            filtered_vina_dir = os.path.join(vina_logs, "filtered_vina_output")
+            if not os.path.exists(filtered_vina_dir):
+                os.mkdir(filtered_vina_dir)
+            for file in os.listdir(vina_logs):
+                if file.endswith(".pdbqt") and "bound" in file:
+                    species = file.split("_")[0]
+                    model_num = file.split("ligand_")[1].split(".pdbqt")[0]
+                    for pose in best_poses.itertuples():
+                        if pose.species == species and pose.model == int(model_num):
+                            shutil.copy(file, filtered_vina_dir)
+                    for pose in worst_poses.itertuples():
+                        if pose.species == species and pose.model == int(model_num):
+                            shutil.copy(file, filtered_vina_dir)
+            print(
+                "\nDONE! The best and worst poses have been copied to "
+                'the "filtered_vina_output" folder.'
+            )
 
 
 if __name__ == "__main__":
