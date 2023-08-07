@@ -613,15 +613,15 @@ def get_poc():
         # Inform the user where the new files were stored
         print(
             f'\nThe binding site PDB and POC files have been '
-            'stored in {os.path.join(pdb_dir, "binding_sites")}'
+            'stored in the "binding_sites" folder.'
         )
-        # Ask the user if they would like to combine the poc files into one file?
+        # Combine the .poc files into one file?
         combine = input(
             "\nWould you like to combine the query .poc files into one file? (y/n): "
         )
         while combine not in ["y", "n"]:
             print('Invalid input. Please enter either "y" or "n".')
-            combine = input("Retain the ligand records in the new PDB file? (y/n): ")
+            combine = input("\nWould you like to combine the query .poc files into one file? (y/n): ")
             if check_exit(combine):
                 return
         if combine == "y":
@@ -631,12 +631,24 @@ def get_poc():
                 "\nEnter the name of the reference .poc file so that it "
                 "doesn't get added to the combined file: "
             )
-            if not ref_poc.endswith(".poc"):
-                ref_poc += ".poc"
+            if not ref_poc.endswith(".pdb"):
+                ref_poc += ".pdb"
+            # Check if the reference .poc file exists
+            while not os.path.exists(os.path.join(pdb_dir, ref_poc)):
+                print(
+                    f'The file "{ref_poc}" does not exist. Please enter the '
+                    "name of the reference .poc file so that it doesn't get "
+                    "added to the combined file: "
+                )
+                ref_poc = input()
+                if not ref_poc.endswith(".pdb"):
+                    ref_poc += ".pdb"
+                if check_exit(ref_poc):
+                    return
             all_poc = []
             # Read all of the .poc files and add them to the all_poc list
             for file in os.listdir(os.path.join(pdb_dir, "binding_sites")):
-                if file.endswith(".poc") and file != ref_poc:
+                if file.endswith(".poc") and file.split(".")[0] != ref_poc.split(".")[0]:
                     with open(file, "r") as f:
                         for line in f:
                             if line.startswith("TER"):
@@ -645,10 +657,14 @@ def get_poc():
             with open("all_pocs.poc", "w") as o:
                 for line in all_poc:
                     o.write(line)
-        print(
-            'All of the query .poc files have been combined and saved '
-            'as "all_pocs.poc" in the "binding_sites" folder.'
-        )
+            print(
+                '\nAll of the query .poc files have been combined and saved '
+                'as "all_pocs.poc" in the "binding_sites" folder.'
+            )
+        else:
+            print(
+                "\nAll .poc files have been stored in the binding_sites folder."
+            )
 
 
 if __name__ == "__main__":
