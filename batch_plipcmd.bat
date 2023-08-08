@@ -13,4 +13,10 @@ for %%f in ("%DIR_PATH%\*protonated.pdb") do (
     obabel "%%f" -o pdb -O "%DIR_PATH%\%%~nf.pdb" -h
 )
 
+REM Move plip results to a folder
+if not exist "%DIR_PATH%\plip_results" mkdir "%DIR_PATH%\plip_results"
+echo Moving files to the plip_results folder...
+move "%DIR_PATH%\*.xml" "%DIR_PATH%\plip_results"
+move "%DIR_PATH%\*_protonated.pdb" "%DIR_PATH%\plip_results"
+
 pause
