@@ -199,7 +199,6 @@ def ligand_rmsd():
             lines = [line.split() for line in lines]
             lig_rmsds = [line[1] for line in lines[2:]]
             species = [line[0].split("_")[0] for line in lines[2:]]
-            # Find the model number by selecting the number after the word "model"
             model = [line[0].split("model")[1].split(":")[0] for line in lines[2:]]
         # Add the ligand RMSD values to the dataframe
         lig_rmsd_df["lig_rmsd"] = lig_rmsds
@@ -262,6 +261,33 @@ def ligand_rmsd():
             "\nDONE! The best and worst poses have been copied "
             'to the "filtered_models" folder.'
         )
+
+        # Edit the ligand_rmsd.txt file so that it only includes the best and worst poses
+        with open("ligand_rmsd.txt", "r") as f:
+            lines = f.readlines()
+        with open("filtered_ligand_rmsd.txt", "w") as f:
+            # Write the first two lines of the file
+            for line in lines[:2]:
+                f.write(line)
+            # Write the best and worst poses to the file
+            for line in lines[2:]:
+                for pose in best_poses.itertuples():
+                    if (
+                        pose.species == line.split("_")[0]
+                        and str(pose.model) == line.split("model")[1].split(":")[0]
+                    ):
+                        f.write(line)
+                for pose in worst_poses.itertuples():
+                    if (
+                        pose.species == line.split("_")[0]
+                        and str(pose.model) == line.split("model")[1].split(":")[0]
+                    ):
+                        f.write(line)
+        print(
+            "\nA filtered ligand RMSD file has been created to only include "
+            "the best and worst poses."
+        )
+
         filter_vina = input(
             "\nWould you like to filter the Vina output according to RMSD "
             "as well? (y/n): "
