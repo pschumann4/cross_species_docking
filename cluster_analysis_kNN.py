@@ -10,6 +10,7 @@
 """
 
 import os
+import sys
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -169,31 +170,23 @@ def cluster_analysis():
     df.to_csv(file_dir + "\kmeans_clustering_summary.csv", index=False)
 
     # Ask the user for the name of the self-docking pose
-    self_dock_species = input(
-        "\nEnter the species name of the self-docking pose "
-        "to be used as a pseudo-reference (case sensitive): "
-    )
+    self_dock_species = input("Enter the species name of the self-docking pose to be used as a pseudo-reference (case sensitive): ")
     while self_dock_species not in df["species"].unique().tolist():
-        self_dock_species = input(
-            "The species name entered is not found in the "
-            "dataframe. Please enter the species name again: "
-        )
+        self_dock_species = input("The species name entered is not found in the dataframe. Please enter the species name again: ")
     # Ask the user for the pose number of the self-docking pose
-    self_dock_pose = input(
-        "Enter the pose number of the self-docking pose to be "
-        "used as a pseudo-reference: "
-    )
+    self_dock_pose = input("Enter the pose number of the self-docking pose to be used as a pseudo-reference: ")
     df.columns = [col.upper() for col in df.columns]
 
     # Plot the clusters in 2D using seaborn
     print("\nPlotting the clusters in 2D...")
     # Create a cmap for the clusters
-    cmap = ListedColormap(["#ff7f0e", "#2ca02c", "#1f77b4"])
+    cmap = ListedColormap(["#D81B60", "#1E88E5", "#FFC107", "#004D40", "#CC79A7", "#56B4E9"])
     sns.set(font_scale=1.2)
     sns.set_style("whitegrid")
     sns.scatterplot(
-        x="PCA1", y="PCA2", hue="CLUSTER", data=df, palette=cmap, legend="full", s=100
+        x="PCA1", y="PCA2", hue="CLUSTER", data=df, palette=cmap.colors, legend="full", s=100
     )
+    sns.move_legend(plt.gca(), "upper center", bbox_to_anchor=(0.5, 1.15), ncol = len(df["CLUSTER"].unique().tolist()), title=None)
     plt.xlabel("PC1 ({:.2f}%)".format(pca.explained_variance_ratio_[0] * 100))
     plt.ylabel("PC2 ({:.2f}%)".format(pca.explained_variance_ratio_[1] * 100))
     plt.scatter(
@@ -215,40 +208,7 @@ def cluster_analysis():
     plt.savefig(file_dir + "\\training_set_clustering.png", dpi=300)
     plt.show()
 
-    # Find the cluster for the self-docking pose
-    ref_cluster = df.loc[
-        (df["SPECIES"] == self_dock_species) & (df["POSE"] == int(self_dock_pose)),
-        "CLUSTER",
-    ].values[0]
-    # Filter the dataframe to only include the reference cluster
-    df0 = df[df["CLUSTER"] == ref_cluster]
-    # Get the list of species in cluster 0
-    species0 = df0["SPECIES"].unique().tolist()
-    # Print as susceptible species
-    print("Susceptible species:")
-    for i in species0:
-        print(i)
-    # Determine the species that are not in cluster 0
-    species1 = df["SPECIES"].unique().tolist()
-    species1 = [x for x in species1 if x not in species0]
-    # Print as non susceptible species
-    print("Non-susceptible species:")
-    for i in species1:
-        print(i)
-    # Write the susceptible species summary to a text file
-    with open(file_dir + "\susceptibility_summary.txt", "w") as f:
-        f.write("Susceptible species:\n")
-        for i in species0:
-            f.write(i + "\n")
-        f.write("\nNon-susceptible species:\n")
-        for i in species1:
-            f.write(i + "\n")
-
     print("\nAll of the plots for this analysis have been saved to {}".format(file_dir))
-    print(
-        "A summary of the species susceptibility calls has been "
-        "saved as 'susceptibility_summary.txt'."
-    )
 
     # Ask the user if they would like to make predictions on a test set
     test_set = input("\nWould you like to make predictions on a test set? (y/n): ")
@@ -376,6 +336,7 @@ def cluster_analysis():
     sns.scatterplot(
         x="PCA1", y="PCA2", hue="CLUSTER", data=df, palette=cmap, legend="full", s=100
     )
+    sns.move_legend(plt.gca(), "upper center", bbox_to_anchor=(0.5, 1.15), ncol = len(df["CLUSTER"].unique().tolist()), title=None)
     plt.xlabel("PC1 ({:.2f}%)".format(pca.explained_variance_ratio_[0] * 100))
     plt.ylabel("PC2 ({:.2f}%)".format(pca.explained_variance_ratio_[1] * 100))
     # Label the added test set
