@@ -101,61 +101,60 @@ def ligand_rmsd():
     # pdb2 as the key
     rmsd_dict = {}
 
+    files = [i for i in os.listdir(pwd) if i.endswith(".pdb") and "model" in i and i != ref]
+
     # Calculate the RMSDs between the reference ligand and all query ligands
-    for file in os.listdir(pwd):
-        # Check if the file is a PDB file containing the word "model"
-        # and is not the reference PDB file
-        if file.endswith(".pdb") and "model" in file and file != ref:
-            # Get the base name of the PDB file
-            base = os.path.basename(file)
-            base = os.path.splitext(base)[0]
-            # Read the PDB file and store the HETATM lines for the specified ligand in a list
-            hetatm2 = []
-            with open(file, "r") as f:
-                for line in f:
-                    if line.startswith("HETATM") and line[17:20].strip() == ligand:
-                        hetatm2.append(line)
-            # Check that the ligand is present in the PDB file, if not, skip the file
-            if len(hetatm2) == 0:
-                print("The ligand was not found in " + file + ".")
-            else:
-                # Create a list to store the coordinates of the ligand
-                coords2 = []
-                atoms2 = []
-                # Iterate through the HETATM lines
-                for line in hetatm2:
-                    # Extract the x, y, and z coordinates from the line (unless it's a hydrogen)
-                    if "H" not in line[12:16]:
-                        x = float(line[30:38])
-                        y = float(line[38:46])
-                        z = float(line[46:54])
-                        # Extract atom name
-                        atoms2.append(line[12:16].strip())
-                        # Add the coordinates to the list
-                        coords2.append([x, y, z])
-                # Convert the list to a NumPy array
-                coords2 = np.array(coords2)
-                # Check that the atoms in the two PDB files are the same
-                if atoms1 != atoms2:
-                    print(
-                        "ERROR: The atoms in "
-                        + ref
-                        + " and "
-                        + file
-                        + " are not identical.\nThis must be corrected before the "
-                        "RMSD can be calculated properly."
-                    )
-                    # Print the lists of atoms in each PDB file
-                    print("Atoms in " + ref + ": " + str(atoms1))
-                    print("Atoms in " + file + ": " + str(atoms2))
-                    return
-                # Perform RMSD calculation
-                diff = coords1 - coords2
-                rmsd = np.sqrt(np.sum(diff**2) / len(coords1))
-                # Round the rmsd value to 3 decimal places
-                rmsd = round(rmsd, 3)
-                # Add the RMSD value to the dictionary
-                rmsd_dict[base] = rmsd
+    for file in files:
+        # Get the base name of the PDB file
+        base = os.path.basename(file)
+        base = os.path.splitext(base)[0]
+        # Read the PDB file and store the HETATM lines for the specified ligand in a list
+        hetatm2 = []
+        with open(file, "r") as f:
+            for line in f:
+                if line.startswith("HETATM") and line[17:20].strip() == ligand:
+                    hetatm2.append(line)
+        # Check that the ligand is present in the PDB file, if not, skip the file
+        if len(hetatm2) == 0:
+            print("The ligand was not found in " + file + ".")
+        else:
+            # Create a list to store the coordinates of the ligand
+            coords2 = []
+            atoms2 = []
+            # Iterate through the HETATM lines
+            for line in hetatm2:
+                # Extract the x, y, and z coordinates from the line (unless it's a hydrogen)
+                if "H" not in line[12:16]:
+                    x = float(line[30:38])
+                    y = float(line[38:46])
+                    z = float(line[46:54])
+                    # Extract atom name
+                    atoms2.append(line[12:16].strip())
+                    # Add the coordinates to the list
+                    coords2.append([x, y, z])
+            # Convert the list to a NumPy array
+            coords2 = np.array(coords2)
+            # Check that the atoms in the two PDB files are the same
+            if atoms1 != atoms2:
+                print(
+                    "ERROR: The atoms in "
+                    + ref
+                    + " and "
+                    + file
+                    + " are not identical.\nThis must be corrected before the "
+                    "RMSD can be calculated properly."
+                )
+                # Print the lists of atoms in each PDB file
+                print("Atoms in " + ref + ": " + str(atoms1))
+                print("Atoms in " + file + ": " + str(atoms2))
+                return
+            # Perform RMSD calculation
+            diff = coords1 - coords2
+            rmsd = np.sqrt(np.sum(diff**2) / len(coords1))
+            # Round the rmsd value to 3 decimal places
+            rmsd = round(rmsd, 3)
+            # Add the RMSD value to the dictionary
+            rmsd_dict[base] = rmsd
 
     # Write the RMSD values to a file
     with open("ligand_rmsd.txt", "w") as f:

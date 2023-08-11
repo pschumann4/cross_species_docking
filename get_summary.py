@@ -51,26 +51,26 @@ def get_summary():
     species = []
     file_count = 0
 
+    vina_dir = [i for i in os.listdir(vina_logs) if i.endswith(".pdbqt") and "bound" in i and "ligand" in i]
+
     # Read the AutoDock Vina log files
-    for file in os.listdir(vina_logs):
-        # If the file contains the words "bound" and "ligand" and endswith ".pdbqt"
-        if file.endswith(".pdbqt") and "bound" in file and "ligand" in file:
-            file_count += 1
-            with open(os.path.join(vina_logs, file), "r") as f:
-                lines = f.readlines()
-                for line in lines:
-                    if line.startswith("REMARK VINA RESULT:"):
-                        # Get the binding affinity
-                        binding_affinity = line.split()[3]
-                        # Append the binding affinity and pose to the lists
-                        binding_affinities.append(binding_affinity)
-                        pose = file.split("_")[-1].split(".")[0]
-                        poses.append(pose)
-                        # Get the species name by splitting the file name 
-                        # at the underscore
-                        species_name = file.split("_")[0]
-                        # Append the species name to the list
-                        species.append(species_name)
+    for file in vina_dir:
+        file_count += 1
+        with open(os.path.join(vina_logs, file), "r") as f:
+            lines = f.readlines()
+            for line in lines:
+                if line.startswith("REMARK VINA RESULT:"):
+                    # Get the binding affinity
+                    binding_affinity = line.split()[3]
+                    # Append the binding affinity and pose to the lists
+                    binding_affinities.append(binding_affinity)
+                    pose = file.split("_")[-1].split(".")[0]
+                    poses.append(pose)
+                    # Get the species name by splitting the file name 
+                    # at the underscore
+                    species_name = file.split("_")[0]
+                    # Append the species name to the list
+                    species.append(species_name)
 
     # Add the binding affinities, poses, and species names to the dataframe
     summary_df["binding_affinity"] = binding_affinities

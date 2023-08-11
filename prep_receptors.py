@@ -31,7 +31,7 @@ def prep_receptors():
     os.chdir(pdb_dir)
     # Get the list of PDB files in the directory
     pdb_files = os.listdir(pdb_dir)
-    pdb_files = [f for f in pdb_files if f.endswith(".pdb")]
+    pdb_files = [i for i in pdb_files if i.endswith(".pdb")]
 
     # Prepare PDBQT files?
     prep_rec = input("\nDo you want to prepare the PDBQT files? (y/n): ").lower()

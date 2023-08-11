@@ -76,7 +76,7 @@ def cluster_analysis():
     kmeans_kwargs = {
         "init": "k-means++",
         "n_init": "auto",
-        "random_state": 0,
+        "random_state": 40,
     }
 
     # Generate an elbow plot to determine the number of clusters
@@ -133,7 +133,7 @@ def cluster_analysis():
     plt.gca().lines[0].set_linewidth(2)
     plt.tight_layout()
     # Save the figure
-    plt.savefig(file_dir + "\silhouette_plot.png", dpi=300)
+    plt.savefig(file_dir + os.sep + "silhouette_plot.png", dpi=300)
     plt.show()
     # Determine the cluster with the highest silhouette score
     max_score = max(silhouette_scores)

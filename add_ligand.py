@@ -29,55 +29,54 @@ def add_flex_residues(file_directory):
         # Start a counter for the output file name
         counter = 1
         # Get list of files in directory
-        files = os.listdir(file_directory)
+        files = [i for i in os.listdir(file_directory) if i.endswith(".pdbqt") and "flex" in i and pdb_name in i]
 
         # Loop through the flex PDBQT files in directory that match the PDB file name
         for file in files:
-            if file.endswith(".pdbqt") and "flex" in file and pdb_name in file:
-                # Get file path
-                file_path = os.path.join(file_directory, file)
-                # Open new file and store lines in dictionary using residue number
-                # and atom name as key
-                with open(file_path, "r") as f:
+            # Get file path
+            file_path = os.path.join(file_directory, file)
+            # Open new file and store lines in dictionary using residue number
+            # and atom name as key
+            with open(file_path, "r") as f:
+                for line in f:
+                    if line.startswith("ATOM"):
+                        residue_name = line[17:20].strip()
+                        residue_num = line[22:26].strip()
+                        atom_name = line[12:16].strip()
+                        new_lines[(residue_name, residue_num, atom_name)] = line
+            # Construct output file path
+            output_file = os.path.join(
+                file_directory, output_prefix + str(counter) + ".pdb"
+            )
+
+            # Open original file and write its lines and new lines to output file
+            with open(os.path.join(file_directory, pdb_file), "r") as f:
+                with open(output_file, "w") as o:
                     for line in f:
                         if line.startswith("ATOM"):
                             residue_name = line[17:20].strip()
                             residue_num = line[22:26].strip()
                             atom_name = line[12:16].strip()
-                            new_lines[(residue_name, residue_num, atom_name)] = line
-                # Construct output file path
-                output_file = os.path.join(
-                    file_directory, output_prefix + str(counter) + ".pdb"
-                )
-
-                # Open original file and write its lines and new lines to output file
-                with open(os.path.join(file_directory, pdb_file), "r") as f:
-                    with open(output_file, "w") as o:
-                        for line in f:
-                            if line.startswith("ATOM"):
-                                residue_name = line[17:20].strip()
-                                residue_num = line[22:26].strip()
-                                atom_name = line[12:16].strip()
-                                if (residue_name, residue_num, atom_name) in new_lines:
-                                    # Replace the coordinates of the original
-                                    # line with the coordinates of the new line
-                                    new_line = list(line)
-                                    new_line[30:38] = new_lines[
-                                        (residue_name, residue_num, atom_name)
-                                    ][30:38]
-                                    new_line[38:46] = new_lines[
-                                        (residue_name, residue_num, atom_name)
-                                    ][38:46]
-                                    new_line[46:54] = new_lines[
-                                        (residue_name, residue_num, atom_name)
-                                    ][46:54]
-                                    o.write("".join(new_line))
-                                else:
-                                    o.write(line)
+                            if (residue_name, residue_num, atom_name) in new_lines:
+                                # Replace the coordinates of the original
+                                # line with the coordinates of the new line
+                                new_line = list(line)
+                                new_line[30:38] = new_lines[
+                                    (residue_name, residue_num, atom_name)
+                                ][30:38]
+                                new_line[38:46] = new_lines[
+                                    (residue_name, residue_num, atom_name)
+                                ][38:46]
+                                new_line[46:54] = new_lines[
+                                    (residue_name, residue_num, atom_name)
+                                ][46:54]
+                                o.write("".join(new_line))
                             else:
                                 o.write(line)
-                # Increment counter
-                counter += 1
+                        else:
+                            o.write(line)
+            # Increment counter
+            counter += 1
 
 
 def add_ligand_to_flex(file_directory):

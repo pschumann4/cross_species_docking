@@ -90,16 +90,15 @@ def pdb_dir_to_fasta_dict(pwd):
     """
     # Create an empty dictionary to store the FASTA sequences
     fasta_dict = {}
+    files = [i for i in os.listdir(pwd) if i.endswith(".pdb")]
     # Loop through the files in the directory
-    for file in os.listdir(pwd):
-        # Check if the file is a PDB file
-        if file.endswith(".pdb"):
-            # Get the name of the PDB file without the extension
-            pdb_name = os.path.splitext(file)[0]
-            # Get the FASTA sequence for the PDB file
-            fasta_seq = pdb_to_fasta(os.path.join(pwd, file))
-            # Add the FASTA sequence to the dictionary
-            fasta_dict[pdb_name] = fasta_seq
+    for file in files:
+        # Get the name of the PDB file without the extension
+        pdb_name = os.path.splitext(file)[0]
+        # Get the FASTA sequence for the PDB file
+        fasta_seq = pdb_to_fasta(os.path.join(pwd, file))
+        # Add the FASTA sequence to the dictionary
+        fasta_dict[pdb_name] = fasta_seq
     return fasta_dict
 
 
@@ -483,22 +482,22 @@ def trim_pdb(ref_modified, pwd):
     # Buffer the first and last residue numbers by 10 residues
     first_res = int(first_res) - 10
     last_res = int(last_res) + 10
+    pdb_files = [i for i in os.listdir(pwd) if i.endswith("modified.pdb") and i != ref_modified]
     # Trim the PDB files
-    for pdb in os.listdir(pwd):
-        if pdb.endswith("modified.pdb") and pdb != ref_modified:
-            with open(pdb) as f:
-                lines = f.readlines()
-            new_lines = []
-            for line in lines:
-                if line.startswith("ATOM"):
-                    res_num = int(line[22:27])
-                    if res_num >= first_res and res_num <= last_res:
-                        new_lines.append(line)
-                else:
+    for pdb in pdb_files:
+        with open(pdb) as f:
+            lines = f.readlines()
+        new_lines = []
+        for line in lines:
+            if line.startswith("ATOM"):
+                res_num = int(line[22:27])
+                if res_num >= first_res and res_num <= last_res:
                     new_lines.append(line)
-            with open(pdb, "w") as f:
-                for line in new_lines:
-                    f.write(line)
+            else:
+                new_lines.append(line)
+        with open(pdb, "w") as f:
+            for line in new_lines:
+                f.write(line)
 
 
 def check_exit(input_str):
@@ -689,9 +688,9 @@ def multiple_prot_align():
 
     # Remove all of the PDB files from the working directory that
     # do not end with "_modified.pdb"
-    for file in os.listdir():
-        if file.endswith(".pdb") and not file.endswith("_modified.pdb"):
-            os.remove(file)
+    dir_files = [i for i in os.listdir() if i.endswith(".pdb") and not i.endswith("_modified.pdb")]
+    for file in dir_files:
+        os.remove(file)
     print("DONE!")
 
 
