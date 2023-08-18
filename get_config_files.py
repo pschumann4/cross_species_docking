@@ -112,34 +112,30 @@ def get_config_files():
         # Create separate lists to store all of the config file information
         flex_pdbqt_files = []
         rigid_pdbqt_files = []
+        pdbqt_files = [i for i in os.listdir(pwd) if i.endswith(".pdbqt") and ligand_name not in i and "residues" not in i]
         # Loop through the files in the directory
-        for file in os.listdir(pwd):
-            if (
-                file.endswith(".pdbqt")
-                and ligand_name not in file
-                and "residues" not in file
-            ):
-                # Get the base name of the file
-                base_name = file.split(".")[0]
-                # Ask the user if the file is flexible or rigid
+        for file in pdbqt_files:
+            # Get the base name of the file
+            base_name = file.split(".pdbqt")[0]
+            # Ask the user if the file is flexible or rigid
+            is_flex = input(
+                "Should " + base_name + " be treated as flexible? (y/n): "
+            )
+            # Convert the user input to lower case
+            is_flex = is_flex.lower()
+            # Check if the user input is valid
+            while is_flex != "y" and is_flex != "n":
+                print("You did not enter a valid input.")
                 is_flex = input(
                     "Should " + base_name + " be treated as flexible? (y/n): "
                 )
-                # Convert the user input to lower case
                 is_flex = is_flex.lower()
-                # Check if the user input is valid
-                while is_flex != "y" and is_flex != "n":
-                    print("You did not enter a valid input.")
-                    is_flex = input(
-                        "Should " + base_name + " be treated as flexible? (y/n): "
-                    )
-                    is_flex = is_flex.lower()
-                if is_flex == "y":
-                    # Add the base name to the flex_pdbqt_files list
-                    flex_pdbqt_files.append(base_name)
-                elif is_flex == "n":
-                    # Add the base name to the rigid_pdbqt_files list
-                    rigid_pdbqt_files.append(base_name)
+            if is_flex == "y":
+                # Add the base name to the flex_pdbqt_files list
+                flex_pdbqt_files.append(base_name)
+            elif is_flex == "n":
+                # Add the base name to the rigid_pdbqt_files list
+                rigid_pdbqt_files.append(base_name)
         # Ask the user if the entries are correct
         print("\nIS THE FOLLOWING INFORMATION CORRECT?")
         print("Flexible PDBQT files: " + str(flex_pdbqt_files))
@@ -155,7 +151,7 @@ def get_config_files():
             break
     # Loop through the flexible PDBQT files and create a config file for each one
     for file in flex_pdbqt_files:
-        with open(file.split("_")[0] + "_conf" + ".txt", "w") as f:
+        with open(file.split("_", 1)[0] + "_conf" + ".txt", "w") as f:
             f.write("flex = {}_flex_residues.pdbqt\n".format(file))
             f.write("receptor = {}_rigid_residues.pdbqt\n".format(file))
             f.write("ligand = {}.pdbqt\n".format(ligand_name))
@@ -170,10 +166,10 @@ def get_config_files():
             f.write("num_modes = {}\n".format(num_modes))
             f.write("energy_range = {}\n".format(energy_range))
             f.write("exhaustiveness = {}\n\n".format(exhaustiveness))
-            f.write("out = " + file.split("_")[0] + "_bound_" + ligand_name + ".pdbqt")
+            f.write("out = " + file.split("_", 1)[0] + "_bound_" + ligand_name + ".pdbqt")
     # Loop through the rigid PDBQT files and create a config file for each one
     for file in rigid_pdbqt_files:
-        with open(file.split("_")[0] + "_conf" + ".txt", "w") as f:
+        with open(file.split("_", 1)[0] + "_conf" + ".txt", "w") as f:
             f.write("receptor = {}.pdbqt\n".format(file))
             f.write("ligand = {}.pdbqt\n".format(ligand_name))
             f.write("scoring = {}\n\n".format(scoring))
@@ -187,7 +183,7 @@ def get_config_files():
             f.write("num_modes = {}\n".format(num_modes))
             f.write("energy_range = {}\n".format(energy_range))
             f.write("exhaustiveness = {}\n\n".format(exhaustiveness))
-            f.write("out = " + file.split("_")[0] + "_bound_" + ligand_name + ".pdbqt")
+            f.write("out = " + file.split("_", 1)[0] + "_bound_" + ligand_name + ".pdbqt")
     # Check that there is a config file for each PDBQT file
     for file in os.listdir(pwd):
         if (
@@ -195,7 +191,7 @@ def get_config_files():
             and ligand_name not in file
             and "residues" not in file
         ):
-            base_name = file.split(".")[0].split("_")[0]
+            base_name = file.split(".pdbqt")[0].split("_", 1)[0]
             if base_name + "_conf" + ".txt" not in os.listdir(pwd):
                 print("There is no config file for " + base_name + ".pdbqt")
             else:
