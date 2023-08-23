@@ -299,7 +299,7 @@ def sim_matrix(tanimoto_dict):
     # Write the data frame to a CSV file named "tanimoto_similarity_matrix.csv"
     df.to_csv("tanimoto_similarity_matrix.csv")
     # Create a heatmap
-    sns.heatmap(df, cmap="inferno", cbar_kws={"label": "Tanimoto Similarity"})
+    sns.clustermap(df, cmap="inferno", cbar_kws={"label": "Tanimoto Similarity"})
     # Adjust the x axis labels
     plt.xticks(rotation=45, va="center", ha="right", rotation_mode="anchor")
     # Reduce the size of the axis labels
@@ -329,28 +329,30 @@ def PLIP_PLIFs():
     Main function
     """
     print(
-        '\nNOTE: All of the PLIP XML reports and protonated PDB files must be in the same directory.\nThe PDB files must all end with "_protonated.pdb".\nType "exit" at any prompt to exit the program.\n'
+        '\nNOTE: All of the PLIP XML reports and protonated PDB '
+        'files must be in the same directory.\nThe PDB files must all end '
+        'with "_protonated.pdb".\nType "exit" at any prompt to exit the program.\n'
     )
     # Ask the user to enter the working directory
     pwd = input('Enter your working directory (type "cd" or "current" to skip): ')
-    # IF the user enters 'current' or 'cd', do not change the working directory
     if pwd == "current" or pwd == "cd":
         pwd = os.getcwd()
     if check_exit(pwd):
         return
-    # Keep asking the user to enter the working directory until it exists
+    # Check that the directory exists
     while not os.path.exists(pwd):
         print(
-            "Error: This directory does not exist. Make sure that the directory path is correct.\n"
+            "Error: This directory does not exist. "
+            "Make sure that the directory path is correct.\n"
         )
         pwd = input("Enter your working directory: ")
         if check_exit(pwd):
             return
     # Change the working directory
     os.chdir(pwd)
-    # Ask the user to enter the ligand name
+    # Prompt user for ligand name
     ligand = input("Enter the ligand ID as it is found within the PDB files: ")
-    # Ask the user to enter the name of the reference PDB file
+    # Prompt user for name of the reference PDB file
     ref_pdb = input("Enter the name of the protonated reference PDB file: ")
     if check_exit(ref_pdb):
         return
@@ -359,7 +361,8 @@ def PLIP_PLIFs():
     # Check if the ref_pdb ends with "_protonated.pdb"
     while not ref_pdb.endswith("_protonated.pdb"):
         print(
-            'Error: The reference PDB file name must be protonated and the file name must end with "_protonated.pdb".'
+            'Error: The reference PDB file name must be protonated '
+            'and the file name must end with "_protonated.pdb".'
         )
         ref_pdb = input("Enter the file name of the protonated reference PDB file: ")
         if not ref_pdb.endswith(".pdb"):
@@ -369,7 +372,8 @@ def PLIP_PLIFs():
     # Check if the file exists
     while not os.path.exists(ref_pdb):
         print(
-            'Error: This file does not appear to exist. Make sure that the file name ends with "_protonated.pdb". The entry is case sensitive.'
+            'Error: This file does not appear to exist. Make sure that the '
+            'file name ends with "_protonated.pdb". The entry is case sensitive.'
         )
         ref_pdb = input("Enter the file name of the protonated reference PDB file: ")
         if not ref_pdb.endswith(".pdb"):
@@ -377,20 +381,19 @@ def PLIP_PLIFs():
         if check_exit(ref_pdb):
             return
     # Get the base name of the reference PDB file without the '_protonated' ending
-    ref_pdb_name = ref_pdb.split("_protonated")[0].split(".")[0]
-    # Create dictionaries to store the PLIFS, merged data frames, and Tanimoto coefficients
+    ref_pdb_name = ref_pdb.split("_protonated.pdb", 1)[0]
+    # Create dictionaries to store the PLIFS, merged data frames, and Tanimoto coeff.
     plifs = {}
     tanimoto_dict = {}
     interaction_dfs = {}
     # Start a timer
     start_time = time.time()
     # Loop through all the PDB and XML files in the working directory
-    for file in os.listdir(pwd):
-        if file.endswith("_protonated.pdb"):
-            pdb = file
+    for pdb in os.listdir(pwd):
+        if pdb.endswith("_protonated.pdb"):
             # Get the base name of the PDB file without the '_protonated' ending
-            pdb_name = pdb.split("_protonated")[0].split(".")[0]
-            # Define the PLIP XML report file name as the PDB file name with the extension changed to .xml and without the '_protonated' ending
+            pdb_name = pdb.split("_protonated.pdb", 1)[0]
+            # Define the PLIP XML report file name
             xml = pdb_name + ".xml"
             print("Parsing PLIP XML report for " + pdb_name + "...")
             # Parse the PLIP XML report
@@ -403,12 +406,10 @@ def PLIP_PLIFs():
             df0 = df0.reset_index(drop=True)
             # Add the df to the interactions dictionary
             interaction_dfs[pdb_name] = df0
-    # Loop through the plifs dictionary and with all possible combinations of PLIFs, merge the data frames
+    # Get all possible combinations of PLIFs and merge
     for k1, v1 in interaction_dfs.items():
         for k2, v2 in interaction_dfs.items():
-            # Merge the PLIFs
             df1 = merge_dfs(v1, v2)
-            # Add the merged data frame to the plifs dictionary
             plifs[k1 + " & " + k2] = df1
     # Write only the merged data frames containing the reference PLIF to a text file
     for k, v in plifs.items():
@@ -424,7 +425,7 @@ def PLIP_PLIFs():
         if file.endswith("_PLIF.txt"):
             new_file = file.split(" & ")[1]
             os.rename(file, new_file)
-    # Loop through all of the merged data frames and calculate the Tanimoto coefficient
+    # Calculate the Tanimoto coefficient for each df
     print("Calculating Tanimoto coefficients...")
     for k, v in plifs.items():
         # Convert the columns to bit strings
@@ -441,10 +442,10 @@ def PLIP_PLIFs():
         else:
             pass
     print("\nWorking on generating a similarity matrix...")
-    # Run the function to generate a similarity matrix
+    # Generate a similarity matrix
     sim_matrix(tanimoto_dict)
     print("Moving output files to PLIF_files folder...")
-    # Create a new folder in the working directory to store the non-structure files
+    # Create a new folder in the working directory to store the non-structural files
     if not os.path.exists(os.path.join(pwd, "PLIF_files")):
         os.makedirs(os.path.join(pwd, "PLIF_files"))
     # Move the text files and XML files to the new folder
@@ -454,11 +455,13 @@ def PLIP_PLIFs():
                 shutil.move(file, os.path.join(pwd, "PLIF_files"))
         # Inform the user where the files were moved to
         print(
-            "All PLIF files moved to the PLIF_files folder in the current working directory."
+            "All PLIF files moved to the PLIF_files folder in the current "
+            "working directory."
         )
     except:
         print(
-            "Identical files were found in the output folder destination. No files were moved."
+            "Identical files were found in the output folder destination. "
+            "No files were moved."
         )
     # End the timer
     end_time = time.time()

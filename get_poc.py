@@ -55,7 +55,7 @@ def min_dist(pdb_file, ligand):
                 )
     # Create a dictionary to store the residue coordinates
     res_coords = {}
-    # Iterate through the lines of the PDB file on a per residue basis to calculate 
+    # Iterate through the lines of the PDB file on a per residue basis to calculate
     # the residue centroids
     for line in lines:
         if line.startswith("ATOM"):
@@ -63,14 +63,14 @@ def min_dist(pdb_file, ligand):
             resnr = line[22:26]
             # Extract the coordinates from the line
             coords = [float(line[30:38]), float(line[38:46]), float(line[46:54])]
-            # If the resnr is not in the res_coords dictionary, add it and set the 
+            # If the resnr is not in the res_coords dictionary, add it and set the
             # value to a list containing the coordinates
             if not resnr in res_coords:
                 res_coords[resnr] = [coords]
             # If the resnr is in the res_coords dict, append the coordinates to the list
             else:
                 res_coords[resnr].append(coords)
-    # Calculate the minimum distance between the each of the ligand and the residue atoms 
+    # Calculate the minimum distance between the each of the ligand and the residue atoms
     # on a per residue basis
     min_dist = {}
     for resnr, coords in res_coords.items():
@@ -88,9 +88,9 @@ def min_dist(pdb_file, ligand):
 def get_bindingsite(pdb_file, ligand):
     """
     Determines which residues in the PDB model are within 7.5 Angstroms of the ligand
-    according to an all-atom distance calculation. Additionally, the centroid of the 
-    ligand and the centroid of each residue are calculated. The distance between the 
-    ligand centroid and the residue centroid is calculated and the residues with a 
+    according to an all-atom distance calculation. Additionally, the centroid of the
+    ligand and the centroid of each residue are calculated. The distance between the
+    ligand centroid and the residue centroid is calculated and the residues with a
     distance less than 7.5 Angstroms plus the ligand's radius are returned.
     """
     # Create a list to hold the coordinates of the ligand atoms
@@ -109,13 +109,13 @@ def get_bindingsite(pdb_file, ligand):
     if not ligand_coords:
         print(f"Ligand {ligand} not found in PDB file {pdb_file}.")
         return None, None
-    # Calculate the centroid of the ligand using the ligand coordinates 
+    # Calculate the centroid of the ligand using the ligand coordinates
     # and the centroid function
     ligand_centroid = centroid(ligand_coords)
     print(f"Ligand centroid: {ligand_centroid}")
     # Create a dictionary to store the residue coordinates
     res_coords = {}
-    # Iterate through the lines of the PDB file on a per residue basis to 
+    # Iterate through the lines of the PDB file on a per residue basis to
     # calculate the residue centroids
     for line in lines:
         if line.startswith("ATOM"):
@@ -123,23 +123,23 @@ def get_bindingsite(pdb_file, ligand):
             resnr = line[22:26]
             # Extract the coordinates from the line
             coords = [float(line[30:38]), float(line[38:46]), float(line[46:54])]
-            # If the resnr is not in the res_centroids dictionary, add it and 
+            # If the resnr is not in the res_centroids dictionary, add it and
             # set the value to a list containing the coordinates
             if not resnr in res_coords:
                 res_coords[resnr] = [coords]
-            # If the resnr is in the res_centroids dictionary, append the 
+            # If the resnr is in the res_centroids dictionary, append the
             # coordinates to the list
             else:
                 res_coords[resnr].append(coords)
     # Create a dictionary to store the residue centroids
     res_centroids = {}
-    # Iterate through the res_coords dictionary and calculate the 
+    # Iterate through the res_coords dictionary and calculate the
     # centroid of each residue
     for resnr, coords in res_coords.items():
         res_centroids[resnr] = centroid(coords)
     # Define the binding site distance (BS_DIST) in Angstroms
     BS_DIST = 7.5
-    # Calculate the distance between the ligand centroid and the ligand 
+    # Calculate the distance between the ligand centroid and the ligand
     # atoms and store the maximum distance in max_dist
     max_dist = 0
     for coords in ligand_coords:
@@ -152,18 +152,18 @@ def get_bindingsite(pdb_file, ligand):
     print(f"Cutoff distance: {cutoff}")
     # Create a list to store the binding site residue numbers
     bindingsite_resnr = []
-    # Iterate through the res_centroids and add the resnr to the 
-    # bindingsite_resnr list if the distance between the ligand centroid 
+    # Iterate through the res_centroids and add the resnr to the
+    # bindingsite_resnr list if the distance between the ligand centroid
     # and the residue centroid is less than or equal to the cutoff
     for resnr, coords in res_centroids.items():
         if euclidean3d(ligand_centroid, coords) < cutoff:
             bindingsite_resnr.append(resnr)
     # Remove duplicate resnr from the bindingsite_resnr list
     bindingsite_resnr = list(set(bindingsite_resnr))
-    # Calculate the minimum distance between the ligand and each 
+    # Calculate the minimum distance between the ligand and each
     # residue in the binding site
     min_dist_res = min_dist(pdb_file, ligand)
-    # Remove resnr that are not matching with the min_dist_res list 
+    # Remove resnr that are not matching with the min_dist_res list
     # and the current bindingsite_resnr list
     bindingsite_resnr = [i for i in bindingsite_resnr if i in min_dist_res]
     # Sort the bindingsite_resnr list
@@ -194,7 +194,7 @@ def get_pdb_bindingsite(pdb_file, bindingsite_res):
             resnr = line[22:26]
             # convert resnr to an integer
             resnr = int(resnr)
-            # If this resnr is equivalent to any resnr in the 
+            # If this resnr is equivalent to any resnr in the
             # binding_site_resnr list, add the line to the new PDB list
             if resnr in bindingsite_res:
                 poc.append(line)
@@ -209,23 +209,24 @@ def get_pdb_bindingsite(pdb_file, bindingsite_res):
     # Get the working directory of the original PDB file
     working_dir = os.path.dirname(pdb_file)
     # Get the filename of the original PDB file without the extension
-    filename = os.path.basename(pdb_file).split(".")[0]
+    filename = os.path.basename(pdb_file).split(".pdb")[0]
     # Add a title line to the new PDB list
     poc.insert(0, "POC  " + filename + "_poc\n")
     # Create a new filename for the new PDB file
-    poc_filename = filename.split(".")[0] + "_bindingsite.poc"
+    poc_filename = filename.split(".pdb")[0] + "_bindingsite.poc"
     # Create a new PDB file in the working directory of the original PDB file
     with open(os.path.join(working_dir, poc_filename), "w") as f:
         for line in poc:
             f.write(line)
     # Create a new filename for the new PDB file
-    pdb_filename = filename.split(".")[0] + "_bindingsite.pdb"
+    pdb_filename = filename.split(".pdb")[0] + "_bindingsite.pdb"
     # Create a new PDB file in the working directory of the original PDB file
     with open(os.path.join(working_dir, pdb_filename), "w") as f:
         for line in poc:
             f.write(line)
     # Print the path to the new PDB file
     print(f"New PDB file: {os.path.join(working_dir, pdb_filename)}")
+
 
 def get_gridbox_coordinates(pdb_file, ligand):
     """
@@ -251,7 +252,7 @@ def get_gridbox_coordinates(pdb_file, ligand):
     if not ligand_coords:
         print(f"The ligand ({ligand}) was not found in the given PDB file {pdb_file}.")
         return None, None
-    # Calculate the centroid of the ligand using the ligand coordinates 
+    # Calculate the centroid of the ligand using the ligand coordinates
     # and the centroid function
     ligand_centroid = centroid(ligand_coords)
     # Round the ligand centroid coordinates to 3 decimal places
@@ -265,10 +266,10 @@ def get_gridbox_coordinates(pdb_file, ligand):
     # Using the max_dist, calculate the size of the gridbox
     size = round(max_dist * 4, 3)
     # Write the ligand centroid coordinates to a file
-    with open(pdb_file.split(".")[0] + "_gridbox_coords.txt", "w") as f:
+    with open(pdb_file.split(".pdb")[0] + "_gridbox_coords.txt", "w") as f:
         f.write(
             "PDB file: "
-            + pdb_file.split(".")[0]
+            + pdb_file.split(".pdb")[0]
             + "\n\nsize_x: "
             + str(size)
             + "\nsize_y: "
@@ -323,7 +324,7 @@ def get_poc():
     """
     Main function
     """
-    # Ask the user if they would like to analyze a single PDB file 
+    # Ask the user if they would like to analyze a single PDB file
     # or a directory of PDB files
     pdb_type = input(
         "Analyze a single PDB file or a directory of PDB files? (single/directory): "
@@ -367,7 +368,7 @@ def get_poc():
         # Read the PDB file
         with open(pdb_file, "r") as f:
             lines = f.readlines()
-        # Check if the ligand is present in the PDB file, 
+        # Check if the ligand is present in the PDB file,
         # if not ask the user to enter the ligand name again
         while ligand not in [
             line[17:20].strip() for line in lines if line.startswith("HETATM")
@@ -441,7 +442,7 @@ def get_poc():
             )
             if check_exit(retain_hetatm):
                 return
-        # If the user would like to retain the ligand records, transfer the ligand 
+        # If the user would like to retain the ligand records, transfer the ligand
         # records from the original PDB file to the new PDB file
         if retain_hetatm == "y":
             # Read the original PDB file
@@ -457,7 +458,8 @@ def get_poc():
                 with open(
                     os.path.join(
                         os.path.dirname(pdb_file),
-                        os.path.basename(pdb_file).split(".")[0] + "_bindingsite.pdb",
+                        os.path.basename(pdb_file).split(".pdb")[0]
+                        + "_bindingsite.pdb",
                     ),
                     "a",
                 ) as f:
@@ -477,7 +479,7 @@ def get_poc():
         with open(
             os.path.join(
                 os.path.dirname(pdb_file),
-                os.path.basename(pdb_file).split(".")[0] + "_bindingsite.pdb",
+                os.path.basename(pdb_file).split(".pdb")[0] + "_bindingsite.pdb",
             ),
             "r",
         ) as f:
@@ -491,7 +493,7 @@ def get_poc():
         with open(
             os.path.join(
                 os.path.dirname(pdb_file),
-                os.path.basename(pdb_file).split(".")[0] + "_bindingsite.pdb",
+                os.path.basename(pdb_file).split(".pdb")[0] + "_bindingsite.pdb",
             ),
             "w",
         ) as f:
@@ -507,37 +509,39 @@ def get_poc():
             output_gridbox = input("Output the gridbox coordinates? (y/n): ")
             if check_exit(output_gridbox):
                 return
-        # If the user would like to output the gridbox coordinates, 
+        # If the user would like to output the gridbox coordinates,
         # run get_gridbox_coordinates()
         if output_gridbox == "y":
             get_gridbox_coordinates(pdb_file, ligand)
-            # If there is a "details" folder, move the "bindingsite" PDBs and the gridbox 
+            # If there is a "details" folder, move the "bindingsite" PDBs and the gridbox
             # coordinates to the "details" folder
             if os.path.exists(os.path.join(os.path.dirname(pdb_file), "details")):
                 shutil.move(
                     os.path.join(
                         os.path.dirname(pdb_file),
-                        os.path.basename(pdb_file).split(".")[0] + "_bindingsite.pdb",
+                        os.path.basename(pdb_file).split(".pdb")[0]
+                        + "_bindingsite.pdb",
                     ),
                     os.path.join(os.path.dirname(pdb_file), "details"),
                 )
                 shutil.move(
                     os.path.join(
                         os.path.dirname(pdb_file),
-                        os.path.basename(pdb_file).split(".")[0] + "_bindingsite.poc",
+                        os.path.basename(pdb_file).split(".pdb")[0]
+                        + "_bindingsite.poc",
                     ),
                     os.path.join(os.path.dirname(pdb_file), "details"),
                 )
                 shutil.move(
                     os.path.join(
                         os.path.dirname(pdb_file),
-                        os.path.basename(pdb_file).split(".")[0]
+                        os.path.basename(pdb_file).split(".pdb")[0]
                         + "_gridbox_coords.txt",
                     ),
                     os.path.join(os.path.dirname(pdb_file), "details"),
                 )
                 print(
-                    'The gridbox coordinates and bindingsite files have been '
+                    "The gridbox coordinates and bindingsite files have been "
                     'outputted to the "details" folder.'
                 )
             else:
@@ -556,7 +560,7 @@ def get_poc():
         pdb_files = [
             os.path.join(pdb_dir, i) for i in os.listdir(pdb_dir) if i.endswith(".pdb")
         ]
-        # Iterate through the PDB files and generate a new PDB file 
+        # Iterate through the PDB files and generate a new PDB file
         # with the binding site residues
         for pdb_file in pdb_files:
             # Check if the file name contains "bindingsite", if so, skip it
@@ -565,7 +569,7 @@ def get_poc():
             # If the PDB file does not contain the ligand, skip to the next PDB file
             with open(pdb_file, "r") as f:
                 lines = f.readlines()
-            # Inform the user which PDB file is being processed, 
+            # Inform the user which PDB file is being processed,
             # and extract the PDB file name.
             print(f"Processing {os.path.basename(pdb_file)}")
             # Check if the ligand is present in the PDB file
@@ -599,20 +603,20 @@ def get_poc():
             shutil.move(
                 os.path.join(
                     os.path.dirname(pdb_file),
-                    os.path.basename(pdb_file).split(".")[0] + "_bindingsite.pdb",
+                    os.path.basename(pdb_file).split(".pdb")[0] + "_bindingsite.pdb",
                 ),
                 os.path.join(pdb_dir, "binding_sites"),
             )
             shutil.move(
                 os.path.join(
                     os.path.dirname(pdb_file),
-                    os.path.basename(pdb_file).split(".")[0] + "_bindingsite.poc",
+                    os.path.basename(pdb_file).split(".pdb")[0] + "_bindingsite.poc",
                 ),
                 os.path.join(pdb_dir, "binding_sites"),
             )
         # Inform the user where the new files were stored
         print(
-            f'\nThe binding site PDB and POC files have been '
+            f"\nThe binding site PDB and POC files have been "
             'stored in the "binding_sites" folder.'
         )
         # Combine the .poc files into one file?
@@ -621,7 +625,9 @@ def get_poc():
         )
         while combine not in ["y", "n"]:
             print('Invalid input. Please enter either "y" or "n".')
-            combine = input("\nWould you like to combine the query .poc files into one file? (y/n): ")
+            combine = input(
+                "\nWould you like to combine the query .poc files into one file? (y/n): "
+            )
             if check_exit(combine):
                 return
         if combine == "y":
@@ -648,7 +654,10 @@ def get_poc():
             all_poc = []
             # Read all of the .poc files and add them to the all_poc list
             for file in os.listdir(os.path.join(pdb_dir, "binding_sites")):
-                if file.endswith(".poc") and file.split(".")[0] != ref_poc.split(".")[0]:
+                if (
+                    file.endswith(".poc")
+                    and file.split(".pdb")[0] != ref_poc.split(".pdb")[0]
+                ):
                     with open(file, "r") as f:
                         for line in f:
                             if line.startswith("TER"):
@@ -658,13 +667,11 @@ def get_poc():
                 for line in all_poc:
                     o.write(line)
             print(
-                '\nAll of the query .poc files have been combined and saved '
+                "\nAll of the query .poc files have been combined and saved "
                 'as "all_pocs.poc" in the "binding_sites" folder.'
             )
         else:
-            print(
-                "\nAll .poc files have been stored in the binding_sites folder."
-            )
+            print("\nAll .poc files have been stored in the binding_sites folder.")
 
 
 if __name__ == "__main__":
