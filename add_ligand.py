@@ -357,6 +357,9 @@ def add_ligand():
 
     # Set the current working directory to the directory path
     os.chdir(pwd)
+    
+    ref = ""
+    ref_name = ""
 
     # Search the directory for a file that starts with "ref_"
     for file in os.listdir(pwd):
@@ -366,9 +369,10 @@ def add_ligand():
             # check for valid input
             while ref.lower() not in ["y", "n"]:
                 ref = input("Please enter y or n: ")
-    if ref == "y":
-        ref_name = file
-    else:
+            if ref == "y":
+                ref_name = file
+                break
+    if ref == "n":
         ref_name = input("Enter the name of the reference PDB file (if none, type 'random'): ")
         if check_exit(ref_name):
             return
