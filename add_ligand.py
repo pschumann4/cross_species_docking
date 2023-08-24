@@ -366,23 +366,22 @@ def add_ligand():
             # check for valid input
             while ref.lower() not in ["y", "n"]:
                 ref = input("Please enter y or n: ")
-            if ref == "y":
-                ref_name = file
-                break
-            else:
-                ref_name = input("Enter the name of the reference PDB file (if none, type 'random'): ")
-                if check_exit(ref_name):
-                    return
-                if ref_name.endswith(".pdb") or ref_name == "random":
-                    pass
-                else:
-                    ref_name += ".pdb"
-                if ref_name == "random":
-                    # Create a list of PDB files in the directory
-                    pdb_files = [f for f in os.listdir(pwd) if f.endswith(".pdb")]
-                    # Randomly select a PDB file from the list
-                    ref_name = random.choice(pdb_files)
-                    print("Randomly selected reference PDB file: {}".format(ref_name))
+    if ref == "y":
+        ref_name = file
+    else:
+        ref_name = input("Enter the name of the reference PDB file (if none, type 'random'): ")
+        if check_exit(ref_name):
+            return
+        if ref_name.endswith(".pdb") or ref_name == "random":
+            pass
+        else:
+            ref_name += ".pdb"
+        if ref_name == "random":
+            # Create a list of PDB files in the directory
+            pdb_files = [f for f in os.listdir(pwd) if f.endswith(".pdb")]
+            # Randomly select a PDB file from the list
+            ref_name = random.choice(pdb_files)
+            print("Randomly selected reference PDB file: {}".format(ref_name))
     
     # Check that the reference file exists and if not ask for it again
     while not os.path.exists(ref_name):
