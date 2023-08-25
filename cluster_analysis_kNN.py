@@ -10,7 +10,6 @@
 """
 
 import os
-import sys
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -18,6 +17,7 @@ import pandas as pd
 import seaborn as sns
 from kneed import KneeLocator
 from matplotlib.colors import ListedColormap
+from matplotlib.colors import LinearSegmentedColormap
 from sklearn.cluster import KMeans
 from sklearn.decomposition import PCA
 from sklearn.metrics import silhouette_score
@@ -33,7 +33,7 @@ def cluster_analysis():
     and if they want to perform a k-nearest neighbors analysis.
     """
     # Read the summary csv file
-    summary_file = input("Enter the file path for the summary file: ")
+    summary_file = input("Enter the file path for the ensemble-docking summary file: ")
     # Remove the quotes from the file path
     summary_file = summary_file.replace('"', "")
     file_dir = os.path.dirname(summary_file)
@@ -58,7 +58,7 @@ def cluster_analysis():
     # Display the values of the correlation coefficients
     for i in range(len(corr)):
         for j in range(len(corr)):
-            text = plt.text(
+            plt.text(
                 j + 0.5,
                 i + 0.5,
                 round(corr.iloc[i, j], 2),
@@ -66,7 +66,6 @@ def cluster_analysis():
                 va="center",
                 color="black",
             )
-    plt.title("Correlation Plot")
     plt.tight_layout()
     # Save the figure
     plt.savefig(file_dir + "\correlation_plot.png", dpi=300)
@@ -90,20 +89,29 @@ def cluster_analysis():
         kmeans = KMeans(n_clusters=k, **kmeans_kwargs)
         kmeans.fit(df.iloc[:, 3:])
         sse.append(kmeans.inertia_)
+    # Determine the optimal number of clusters programmatically
+    kl = KneeLocator(range(1, 11), sse, curve="convex", direction="decreasing")
     plt.style.use("seaborn-v0_8-colorblind")
     plt.plot(range(1, 11), sse, "bx-")
-    plt.title("Elbow Plot")
     plt.xticks(range(1, 11))
     plt.xlabel("Number of Clusters")
     plt.ylabel("SSE")
     plt.gca().lines[0].set_color("black")
     plt.gca().lines[0].set_linewidth(2)
+    # Plot a red dot at the optimal number of clusters
+    plt.plot(
+        kl.elbow,
+        sse[kl.elbow - 1],
+        marker="o",
+        markersize=10,
+        markerfacecolor="red",
+        markeredgecolor="black"
+    )
     plt.tight_layout()
     # Save the figure
     plt.savefig(file_dir + "\elbow_plot.png", dpi=300)
     plt.show()
-    # Determine the optimal number of clusters programmatically
-    kl = KneeLocator(range(1, 11), sse, curve="convex", direction="decreasing")
+    
     # Print the optimal number of clusters
     print(
         "\nAccording to the elbow plot, "
@@ -122,22 +130,31 @@ def cluster_analysis():
         kmeans.fit(df.iloc[:, 3:])
         score = silhouette_score(df.iloc[:, 3:], kmeans.labels_)
         silhouette_scores.append(score)
+    # Determine the cluster with the highest silhouette score
+    max_score = max(silhouette_scores)
+    max_score_index = silhouette_scores.index(max_score)
     # Plot the silhouette scores
     plt.style.use("seaborn-v0_8-colorblind")
     plt.plot(range(2, 11), silhouette_scores, "bx-")
-    plt.title("Silhouette Plot")
     plt.xticks(range(2, 11))
     plt.xlabel("Number of Clusters")
     plt.ylabel("Silhouette Score")
     plt.gca().lines[0].set_color("black")
     plt.gca().lines[0].set_linewidth(2)
+    # Plot a red dot at the optimal number of clusters
+    plt.plot(
+        max_score_index + 2,
+        silhouette_scores[max_score_index],
+        marker="o",
+        markersize=10,
+        markerfacecolor="red",
+        markeredgecolor="black"
+    )
     plt.tight_layout()
     # Save the figure
     plt.savefig(file_dir + os.sep + "silhouette_plot.png", dpi=300)
     plt.show()
-    # Determine the cluster with the highest silhouette score
-    max_score = max(silhouette_scores)
-    max_score_index = silhouette_scores.index(max_score)
+
     # Print the optimal number of clusters
     print(
         "\nAccording to the silhouette plot, "
@@ -184,7 +201,7 @@ def cluster_analysis():
     sns.set(font_scale=1.2)
     sns.set_style("whitegrid")
     sns.scatterplot(
-        x="PCA1", y="PCA2", hue="CLUSTER", data=df, palette=cmap.colors, legend="full", s=100
+        x="PCA1", y="PCA2", hue="CLUSTER", data=df, palette=cmap.colors, legend="full", s=75
     )
     sns.move_legend(plt.gca(), "upper center", bbox_to_anchor=(0.5, 1.15), ncol = len(df["CLUSTER"].unique().tolist()), title=None)
     plt.xlabel("PC1 ({:.2f}%)".format(pca.explained_variance_ratio_[0] * 100))
@@ -198,7 +215,7 @@ def cluster_analysis():
             (df["SPECIES"] == self_dock_species) & (df["POSE"] == int(self_dock_pose)),
             "PCA2",
         ],
-        s=200,
+        s=100,
         facecolors="none",
         edgecolors="black",
         linewidths=2,
@@ -211,20 +228,35 @@ def cluster_analysis():
     print("\nAll of the plots for this analysis have been saved to {}".format(file_dir))
 
     # Ask the user if they would like to make predictions on a test set
-    test_set = input("\nWould you like to make predictions on a test set? (y/n): ")
-    test_set = test_set.lower()
-    while test_set not in ["y", "n"]:
-        test_set = input("Please enter 'y' or 'n': ")
-    if test_set == "n":
+    test = input("\nWould you like to make predictions on a test set? (y/n): ")
+    test = test.lower()
+    while test not in ["y", "n"]:
+        test = input("Please enter 'y' or 'n': ")
+    if test == "n":
         return
+
+    # Ask for the file path to a test set to make predictions on
+    test_set = input("\nEnter the file path to a test set to make predictions on: ")
+    test_set = test_set.replace('"', "")
+    file_dir = os.path.dirname(test_set)
+    test_df = pd.read_csv(test_set)
+    # Prep and standardize the test set
+    test_df["binding_affinity"] = test_df["binding_affinity"] * -1
+    test_df["lig_rmsd"] = test_df["lig_rmsd"] * -1
+    test_df.iloc[:, 3:] = (
+        test_df.iloc[:, 3:] - test_df.iloc[:, 3:].mean()
+    ) / test_df.iloc[:, 3:].std()
+    # Convert all column names to uppercase
+    test_df.columns = [col.upper() for col in test_df.columns]
+
     # Specify the features as the 4 docking metrics, prior to PCA
     X = df.iloc[:, 3:7]
     # Use the cluster labels as the target
     Y = df["CLUSTER"]
     # Use k-nearest neighbors to predict the cluster labels for the test set
-    print("\nPredicting the cluster labels for the test set...")
+    print("\nDetermining optimal number of neighbors via 5-fold cross-validation...")
 
-    # Determine the optimal number of neighbors via cross-validation and K-fold
+    # Determine the optimal number of neighbors via 5-fold cross-validation
     k_range = list(range(1, round(len(df) / 2)))
     # Create a dictionary of the parameter values to test
     param_grid = dict(n_neighbors=k_range)
@@ -233,7 +265,7 @@ def cluster_analysis():
         KNeighborsClassifier(),
         param_grid,
         cv=KFold(n_splits=5, shuffle=True, random_state=42),
-        scoring="accuracy",
+        scoring="accuracy"
     )
     # Fit the grid with data
     grid.fit(X, Y)
@@ -257,25 +289,12 @@ def cluster_analysis():
 
     # Write the cv.results_ to a csv file
     cv_results = pd.DataFrame(grid.cv_results_)
-    cv_results.to_csv(file_dir + "\\knn_cv_results.csv")
+    cv_results.to_csv(file_dir + "\\knn_validation_results.csv")
 
     # Instantiate the model with the optimal number of neighbors
     knn = KNeighborsClassifier(n_neighbors=grid.best_params_["n_neighbors"])
     # Fit the model
     knn.fit(X, Y)
-
-    # Ask for the file path to a test set to make predictions on
-    test_set = input("\nEnter the file path to a test set to make predictions on: ")
-    test_set = test_set.replace('"', "")
-    test_df = pd.read_csv(test_set)
-    # Prep and standardize the test set
-    test_df["binding_affinity"] = test_df["binding_affinity"] * -1
-    test_df["lig_rmsd"] = test_df["lig_rmsd"] * -1
-    test_df.iloc[:, 3:] = (
-        test_df.iloc[:, 3:] - test_df.iloc[:, 3:].mean()
-    ) / test_df.iloc[:, 3:].std()
-    # Convert all column names to uppercase
-    test_df.columns = [col.upper() for col in test_df.columns]
 
     # Make predictions on the test set
     print("\nMaking predictions on the test set...")
@@ -284,20 +303,16 @@ def cluster_analysis():
     test_df["CLUSTER"] = Z
 
     # Remove the PCA columns by reloading the summary file
-    df = pd.read_csv(summary_file)
-    # Multiply the "binding_affinity" and "lig_rmsd" columns by -1
-    # so that higher values indicate a better pose
-    df["binding_affinity"] = df["binding_affinity"] * -1
-    df["lig_rmsd"] = df["lig_rmsd"] * -1
-    # Standardize the data
-    df.iloc[:, 3:] = (df.iloc[:, 3:] - df.iloc[:, 3:].mean()) / df.iloc[:, 3:].std()
-    # Convert all column names to uppercase
-    df.columns = [col.upper() for col in df.columns]
-    # Add the cluster labels to the dataframe
-    df["CLUSTER"] = Y
+    train_df = pd.read_csv(summary_file)
+    train_df["binding_affinity"] = train_df["binding_affinity"] * -1
+    train_df["lig_rmsd"] = train_df["lig_rmsd"] * -1
+    train_df.iloc[:, 3:] = (train_df.iloc[:, 3:] - train_df.iloc[:, 3:].mean()) / train_df.iloc[:, 3:].std()
+    train_df.columns = [col.upper() for col in train_df.columns]
+    # Add the cluster labels
+    train_df["CLUSTER"] = Y
 
     # Combine with the original dataframe
-    df = pd.concat([df, test_df])
+    df = pd.concat([train_df, test_df])
     # Perform PCA on the combined dataframe for visualization
     print("\nPerforming PCA to reduce the data to 3 dimensions...")
     pca = PCA(n_components=3)
@@ -326,6 +341,9 @@ def cluster_analysis():
         index=df.iloc[:, 3:7].columns,
     ).to_csv(file_dir + "\pca_loadings.csv")
 
+    # Get a list of all the species names from the train_df
+    train_species = train_df["SPECIES"].unique().tolist()
+
     # Plot the combined data in 2D
     print("\nPlotting the clusters in 2D...")
     print(
@@ -334,11 +352,21 @@ def cluster_analysis():
     sns.set(font_scale=1.2)
     sns.set_style("whitegrid")
     sns.scatterplot(
-        x="PCA1", y="PCA2", hue="CLUSTER", data=df, palette=cmap.colors, legend="full", s=50
+        x="PCA1", y="PCA2", hue="CLUSTER", data=df, palette=cmap.colors, legend="full", s=35
     )
     sns.move_legend(plt.gca(), "upper center", bbox_to_anchor=(0.5, 1.15), ncol = len(df["CLUSTER"].unique().tolist()), title=None)
     plt.xlabel("PC1 ({:.2f}%)".format(pca.explained_variance_ratio_[0] * 100))
     plt.ylabel("PC2 ({:.2f}%)".format(pca.explained_variance_ratio_[1] * 100))
+    # Label all the species in found in the train_species list
+    for i in train_species:
+        plt.scatter(
+            df.loc[(df["SPECIES"] == i), "PCA1"],
+            df.loc[(df["SPECIES"] == i), "PCA2"],
+            s=35,
+            facecolors="none",
+            edgecolors="black",
+            linewidths=1,
+        )
     plt.tight_layout()
     # Save the figure
     plt.savefig(file_dir + '\\predicted_clustering_2D.png', dpi=300)
@@ -354,6 +382,9 @@ def cluster_analysis():
             "\nClose the plot window to continue. "
             'The plot will be saved as "combined_cluster_plot_3D.png".'
         )
+        cmap = LinearSegmentedColormap.from_list(
+            "custom", cmap.colors[: len(df["CLUSTER"].unique().tolist())]
+        )
         fig = plt.figure(figsize=(8, 8))
         ax = fig.add_subplot(111, projection="3d")
         ax.scatter(
@@ -362,15 +393,27 @@ def cluster_analysis():
             df["PCA3"],
             c=df["CLUSTER"],
             cmap=cmap,
-            s=50,
-            alpha=0.7,
+            s=35,
+            alpha=0.65,
         )
+        # Label all the species in found in the train_species list
+        for i in train_species:
+            ax.scatter(
+                df.loc[(df["SPECIES"] == i), "PCA1"],
+                df.loc[(df["SPECIES"] == i), "PCA2"],
+                df.loc[(df["SPECIES"] == i), "PCA3"],
+                s=35,
+                alpha=1,
+                facecolors="none",
+                edgecolors="black",
+                linewidths=2,
+            )
         ax.set_xlabel("PC1 ({:.2f}%)".format(pca.explained_variance_ratio_[0] * 100))
         ax.set_ylabel("PC2 ({:.2f}%)".format(pca.explained_variance_ratio_[1] * 100))
         ax.set_zlabel("PC3 ({:.2f}%)".format(pca.explained_variance_ratio_[2] * 100))
         plt.tight_layout()
         # Save the figure
-        #plt.savefig(file_dir + "\\predicted_clustering_3D", dpi=300)
+        plt.savefig(file_dir + "\\predicted_clustering_3D", dpi=300)
         plt.show()
 
     # Find the cluster for the self-docking pose
