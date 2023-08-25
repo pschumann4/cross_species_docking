@@ -334,25 +334,14 @@ def cluster_analysis():
     sns.set(font_scale=1.2)
     sns.set_style("whitegrid")
     sns.scatterplot(
-        x="PCA1", y="PCA2", hue="CLUSTER", data=df, palette=cmap, legend="full", s=100
+        x="PCA1", y="PCA2", hue="CLUSTER", data=df, palette=cmap.colors, legend="full", s=50
     )
     sns.move_legend(plt.gca(), "upper center", bbox_to_anchor=(0.5, 1.15), ncol = len(df["CLUSTER"].unique().tolist()), title=None)
     plt.xlabel("PC1 ({:.2f}%)".format(pca.explained_variance_ratio_[0] * 100))
     plt.ylabel("PC2 ({:.2f}%)".format(pca.explained_variance_ratio_[1] * 100))
-    # Label the added test set
-    sns.scatterplot(
-        x="PCA1",
-        y="PCA2",
-        data=df.iloc[-len(test_df) :, :],
-        s=200,
-        marker="o",
-        facecolors="none",
-        edgecolor="black",
-        linewidth=2,
-    )
     plt.tight_layout()
     # Save the figure
-    # plt.savefig(file_dir + '\\predicted_clustering_2D.png', dpi=300)
+    plt.savefig(file_dir + '\\predicted_clustering_2D.png', dpi=300)
     plt.show()
 
     # Generate a 3D scatter plot of the combined data
@@ -373,26 +362,15 @@ def cluster_analysis():
             df["PCA3"],
             c=df["CLUSTER"],
             cmap=cmap,
-            s=100,
-            alpha=0.6,
+            s=50,
+            alpha=0.7,
         )
         ax.set_xlabel("PC1 ({:.2f}%)".format(pca.explained_variance_ratio_[0] * 100))
         ax.set_ylabel("PC2 ({:.2f}%)".format(pca.explained_variance_ratio_[1] * 100))
         ax.set_zlabel("PC3 ({:.2f}%)".format(pca.explained_variance_ratio_[2] * 100))
-        # Label the added test set
-        ax.scatter(
-            df.iloc[-len(test_df) :, -3],
-            df.iloc[-len(test_df) :, -2],
-            df.iloc[-len(test_df) :, -1],
-            s=200,
-            marker="o",
-            facecolors="none",
-            edgecolor="black",
-            linewidth=2,
-        )
         plt.tight_layout()
         # Save the figure
-        plt.savefig(file_dir + "\\predicted_clustering_3D", dpi=300)
+        #plt.savefig(file_dir + "\\predicted_clustering_3D", dpi=300)
         plt.show()
 
     # Find the cluster for the self-docking pose

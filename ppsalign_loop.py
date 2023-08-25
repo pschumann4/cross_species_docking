@@ -21,15 +21,33 @@ def ppsalign_loop():
     # Change the working directory to the directory containing the .poc files
     os.chdir(poc_dir)
     # Get the list of .poc files in the directory
-    poc_files = os.listdir(poc_dir)
+    poc_files = [i for i in os.listdir(poc_dir) if i.endswith(".poc")]
 
-    # Specify name of template .poc file
-    template = input("Enter the name of the template .poc file: ")
-    if not template.endswith(".poc"):
-        template += ".poc"
+    # Search for the template .poc file
+    template = ""
+    for poc in poc_files:
+        if poc.startswith("ref_"):
+            ref = input("Is {} the template .poc file? (y/n): ".format(poc))
+            ref = ref.lower()
+            # check for valid input
+            while ref.lower() not in ["y", "n"]:
+                ref = input("Please enter y or n: ")
+            if ref == "y":
+                template = poc
+                break
+    if ref == "n":
+        template = input("Enter the name of the template (reference) .poc file: ")
+        if not template.endswith(".poc"):
+            template += ".poc"
+        while template not in poc_files:
+            template = input(
+                "That file does not appear to exist.\nPlease enter the name of the template (reference) .poc file: "
+            )
+            if not template.endswith(".poc"):
+                template += ".poc"
 
     for poc in poc_files:
-        if poc.endswith(".poc") and poc != template:
+        if poc != template:
             # Create the command to run PPSalign
             cmd = (
                 "PPSalign "
@@ -40,6 +58,7 @@ def ppsalign_loop():
                 + poc.split(".poc")[0]
                 + "_PPS.txt"
             )
+            print("Calculating PPS-Score for " + poc + "...")
             os.system(cmd)
         else:
             continue

@@ -334,54 +334,59 @@ def PLIP_PLIFs():
         'with "_protonated.pdb".\nType "exit" at any prompt to exit the program.\n'
     )
     # Ask the user to enter the working directory
-    pwd = input('Enter your working directory (type "cd" or "current" to skip): ')
-    if pwd == "current" or pwd == "cd":
-        pwd = os.getcwd()
-    if check_exit(pwd):
+    cwd = input('Enter your working directory (type "cd" or "current" to skip): ')
+    if cwd == "current" or cwd == "cd":
+        cwd = os.getcwd()
+    if check_exit(cwd):
         return
     # Check that the directory exists
-    while not os.path.exists(pwd):
+    while not os.path.exists(cwd):
         print(
             "Error: This directory does not exist. "
             "Make sure that the directory path is correct.\n"
         )
-        pwd = input("Enter your working directory: ")
-        if check_exit(pwd):
+        cwd = input("Enter your working directory: ")
+        if check_exit(cwd):
             return
     # Change the working directory
-    os.chdir(pwd)
+    os.chdir(cwd)
     # Prompt user for ligand name
     ligand = input("Enter the ligand ID as it is found within the PDB files: ")
-    # Prompt user for name of the reference PDB file
-    ref_pdb = input("Enter the name of the protonated reference PDB file: ")
-    if check_exit(ref_pdb):
+    if check_exit(ligand):
         return
-    if not ref_pdb.endswith(".pdb"):
-        ref_pdb += ".pdb"
-    # Check if the ref_pdb ends with "_protonated.pdb"
-    while not ref_pdb.endswith("_protonated.pdb"):
-        print(
-            'Error: The reference PDB file name must be protonated '
-            'and the file name must end with "_protonated.pdb".'
-        )
-        ref_pdb = input("Enter the file name of the protonated reference PDB file: ")
-        if not ref_pdb.endswith(".pdb"):
-            ref_pdb += ".pdb"
+
+    # Search the directory for a file that starts with "ref_"
+    ref_pdb = ""
+    pdb_files = [i for i in os.listdir(cwd) if i.endswith(".pdb")]
+    for file in pdb_files:
+        if file.startswith("ref_"):
+            ref = input("Is {} the reference PDB file? (y/n): ".format(file))
+            ref = ref.lower()
+            # check for valid input
+            while ref.lower() not in ["y", "n"]:
+                ref = input("Please enter y or n: ")
+            if ref == "y":
+                ref_pdb = file
+                break
+    if ref == "n":
+        ref_pdb = input("Enter the name of the protonated reference PDB file: ")
         if check_exit(ref_pdb):
             return
-    # Check if the file exists
-    while not os.path.exists(ref_pdb):
-        print(
-            'Error: This file does not appear to exist. Make sure that the '
-            'file name ends with "_protonated.pdb". The entry is case sensitive.'
-        )
-        ref_pdb = input("Enter the file name of the protonated reference PDB file: ")
         if not ref_pdb.endswith(".pdb"):
             ref_pdb += ".pdb"
-        if check_exit(ref_pdb):
-            return
+        while not os.path.exists(ref_pdb):
+            print(
+                'Error: This file does not appear to exist. Make sure that the '
+                'file name ends with "_protonated.pdb". The entry is case sensitive.'
+            )
+            ref_pdb = input("Enter the file name of the protonated reference PDB file: ")
+            if not ref_pdb.endswith(".pdb"):
+                ref_pdb += ".pdb"
+            if check_exit(ref_pdb):
+                return
     # Get the base name of the reference PDB file without the '_protonated' ending
     ref_pdb_name = ref_pdb.split("_protonated.pdb", 1)[0]
+
     # Create dictionaries to store the PLIFS, merged data frames, and Tanimoto coeff.
     plifs = {}
     tanimoto_dict = {}
@@ -389,7 +394,7 @@ def PLIP_PLIFs():
     # Start a timer
     start_time = time.time()
     # Loop through all the PDB and XML files in the working directory
-    for pdb in os.listdir(pwd):
+    for pdb in os.listdir(cwd):
         if pdb.endswith("_protonated.pdb"):
             # Get the base name of the PDB file without the '_protonated' ending
             pdb_name = pdb.split("_protonated.pdb", 1)[0]
@@ -406,6 +411,7 @@ def PLIP_PLIFs():
             df0 = df0.reset_index(drop=True)
             # Add the df to the interactions dictionary
             interaction_dfs[pdb_name] = df0
+    print("Determining all possible combinations of PLIFs...")
     # Get all possible combinations of PLIFs and merge
     for k1, v1 in interaction_dfs.items():
         for k2, v2 in interaction_dfs.items():
@@ -417,11 +423,11 @@ def PLIP_PLIFs():
             with open(k + "_PLIF.txt", "w") as f:
                 f.write(v.to_string())
     # Delete the text files that end with ref_pdb_name + '_PLIF.txt'
-    for file in os.listdir(pwd):
+    for file in os.listdir(cwd):
         if file.endswith(ref_pdb_name + "_PLIF.txt"):
             os.remove(file)
     # Change the titles of the text files so that everything before " & " is removed
-    for file in os.listdir(pwd):
+    for file in os.listdir(cwd):
         if file.endswith("_PLIF.txt"):
             new_file = file.split(" & ")[1]
             os.rename(file, new_file)
@@ -446,13 +452,13 @@ def PLIP_PLIFs():
     sim_matrix(tanimoto_dict)
     print("Moving output files to PLIF_files folder...")
     # Create a new folder in the working directory to store the non-structural files
-    if not os.path.exists(os.path.join(pwd, "PLIF_files")):
-        os.makedirs(os.path.join(pwd, "PLIF_files"))
+    if not os.path.exists(os.path.join(cwd, "PLIF_files")):
+        os.makedirs(os.path.join(cwd, "PLIF_files"))
     # Move the text files and XML files to the new folder
     try:
-        for file in os.listdir(pwd):
+        for file in os.listdir(cwd):
             if file.endswith("PLIF.txt") or "tanimoto_similarity_matrix" in file:
-                shutil.move(file, os.path.join(pwd, "PLIF_files"))
+                shutil.move(file, os.path.join(cwd, "PLIF_files"))
         # Inform the user where the files were moved to
         print(
             "All PLIF files moved to the PLIF_files folder in the current "

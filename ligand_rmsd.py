@@ -30,40 +30,48 @@ def ligand_rmsd():
     Main function
     """
     # Prompt user for the working directory
-    pwd = input("Enter the directory containing the PDB models: ")
-    if check_exit(pwd):
+    cwd = input("Enter the directory containing the PDB models: ")
+    if check_exit(cwd):
         return
 
     # Check that the working directory exists
-    while not os.path.exists(pwd):
+    while not os.path.exists(cwd):
         print("The working directory does not exist.")
-        pwd = input('Enter the directory (or type "exit"): ')
-        if check_exit(pwd):
+        cwd = input('Enter the directory (or type "exit"): ')
+        if check_exit(cwd):
             return
 
     # Change the working directory
-    os.chdir(pwd)
+    os.chdir(cwd)
 
-    # Prompt user for the reference PDB file
-    ref = input("Enter the name of the reference PDB file: ")
-    if check_exit(ref):
-        return
-
-    # Check if the PDB file ends with '.pdb'
-    if not ref.endswith(".pdb"):
-        ref += ".pdb"
-
-    # Check that the PDB file exists
-    while not os.path.exists(ref):
-        print(
-            "The pdb file you entered does not appear to exist. "
-            "The entry is case sensitive."
-        )
-        ref = input('Enter the name of the reference PDB file (or type "exit"): ')
-        if not ref.endswith(".pdb"):
-            ref += ".pdb"
-        if check_exit(ref):
+    # Search the directory for a file that starts with "ref_"
+    ref_pdb = ""
+    pdb_files = [i for i in os.listdir(cwd) if i.endswith(".pdb")]
+    for file in pdb_files:
+        if file.startswith("ref_"):
+            ref = input("Is {} the reference PDB file? (y/n): ".format(file))
+            ref = ref.lower()
+            # check for valid input
+            while ref.lower() not in ["y", "n"]:
+                ref = input("Please enter y or n: ")
+            if ref == "y":
+                ref_pdb = file
+                break
+    if ref == "n":
+        ref_pdb = input("Enter the name of the reference PDB file (if none, type 'random'): ")
+        if check_exit(ref_pdb):
             return
+        if not ref_pdb.endswith(".pdb"):
+            ref_pdb += ".pdb"
+    
+    # Check that the reference file exists and if not ask for it again
+    while not os.path.exists(ref_pdb):
+        print("The reference file does not exist.")
+        ref_pdb = input("Enter the name of the reference PDB file: ")
+        if check_exit(ref_pdb):
+            return
+        if not ref_pdb.endswith(".pdb"):
+            ref_pdb += ".pdb"
 
     # Prompt user for the ligand name
     ligand = input("Enter the ligand ID as it is found within the PDB files: ")
@@ -72,7 +80,7 @@ def ligand_rmsd():
 
     # Read the PDB file and store the HETATM lines for the specified ligand in a list
     hetatm1 = []
-    with open(ref, "r") as f:
+    with open(ref_pdb, "r") as f:
         for line in f:
             if line.startswith("HETATM") and line[17:20].strip() == ligand:
                 hetatm1.append(line)
@@ -101,7 +109,7 @@ def ligand_rmsd():
     # pdb2 as the key
     rmsd_dict = {}
 
-    files = [i for i in os.listdir(pwd) if i.endswith(".pdb") and "model" in i and i != ref]
+    files = [i for i in os.listdir(cwd) if i.endswith(".pdb") and "model" in i and i != ref_pdb]
 
     # Calculate the RMSDs between the reference ligand and all query ligands
     for file in files:
@@ -138,14 +146,14 @@ def ligand_rmsd():
             if atoms1 != atoms2:
                 print(
                     "ERROR: The atoms in "
-                    + ref
+                    + ref_pdb
                     + " and "
                     + file
                     + " are not identical.\nThis must be corrected before the "
                     "RMSD can be calculated properly."
                 )
                 # Print the lists of atoms in each PDB file
-                print("Atoms in " + ref + ": " + str(atoms1))
+                print("Atoms in " + ref_pdb + ": " + str(atoms1))
                 print("Atoms in " + file + ": " + str(atoms2))
                 return
             # Perform RMSD calculation
@@ -176,7 +184,7 @@ def ligand_rmsd():
     # Check that the text file was created
     if os.path.exists("ligand_rmsd.txt"):
         print(
-            "\nThe ligand RMSD values were written to ligand_rmsd.txt "
+            "The ligand RMSD values were written to ligand_rmsd.txt "
             "in your working directory."
         )
 
@@ -234,17 +242,17 @@ def ligand_rmsd():
             best_poses.to_excel(writer, sheet_name="best_poses")
             worst_poses.to_excel(writer, sheet_name="worst_poses")
         print(
-            "\nThe best and worst poses have been written "
+            "The best and worst poses have been written "
             'to "best_and_worst_poses.xlsx".'
         )
 
         # Create a folder called "filtered_models" to hold the best and worst poses
-        filtered_models_dir = os.path.join(pwd, "filtered_models")
+        filtered_models_dir = os.path.join(cwd, "filtered_models")
         if not os.path.exists(filtered_models_dir):
             os.mkdir(filtered_models_dir)
 
         # Copy the best and worst poses to the "filtered_models" folder
-        for model in os.listdir(pwd):
+        for model in os.listdir(cwd):
             if model.endswith(".pdb") and "model" in model:
                 # Get the species and model number from the model name
                 species = model.split("_")[0]
@@ -257,7 +265,7 @@ def ligand_rmsd():
                         shutil.copy(model, filtered_models_dir)
 
         print(
-            "\nDONE! The best and worst poses have been copied "
+            "DONE! The best and worst poses have been copied "
             'to the "filtered_models" folder.'
         )
 
@@ -283,7 +291,7 @@ def ligand_rmsd():
                     ):
                         f.write(line)
         print(
-            "\nA filtered ligand RMSD file has been created to only include "
+            "A filtered ligand RMSD file has been created to only include "
             "the best and worst poses."
         )
 
@@ -296,7 +304,7 @@ def ligand_rmsd():
             filter_vina = input("Please enter y or n: ")
             filter_vina = filter_vina.lower()
         if filter_vina == "y":
-            vina_logs = input("\nEnter the path to the Vina output logs: ")
+            vina_logs = input("Enter the path to the Vina output logs: ")
             while not os.path.exists(vina_logs):
                 vina_logs = input("Please enter a valid path: ")
             os.chdir(vina_logs)
@@ -314,7 +322,7 @@ def ligand_rmsd():
                         if pose.species == species and pose.model == int(model_num):
                             shutil.copy(file, filtered_vina_dir)
             print(
-                "\nDONE! The best and worst poses have been copied to "
+                "DONE! The best and worst poses have been copied to "
                 'the "filtered_vina_output" folder.'
             )
 
