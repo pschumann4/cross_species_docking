@@ -313,6 +313,7 @@ def cluster_analysis():
 
     # Combine with the original dataframe
     df = pd.concat([train_df, test_df])
+
     # Perform PCA on the combined dataframe for visualization
     print("\nPerforming PCA to reduce the data to 3 dimensions...")
     pca = PCA(n_components=3)
@@ -340,6 +341,9 @@ def cluster_analysis():
         ],
         index=df.iloc[:, 3:7].columns,
     ).to_csv(file_dir + "\pca_loadings.csv")
+
+    # Save the dataframe to a csv file
+    df.to_csv(file_dir + "\\predicted_clustering_summary.csv", index=False)
 
     # Get a list of all the species names from the train_df
     train_species = train_df["SPECIES"].unique().tolist()
@@ -422,28 +426,27 @@ def cluster_analysis():
         "CLUSTER",
     ].values[0]
     # Filter the dataframe to only include the reference cluster
-    df0 = df[df["CLUSTER"] == ref_cluster]
+    df_ref = df[df["CLUSTER"] == ref_cluster]
     # Get the list of species in cluster 0
-    species0 = df0["SPECIES"].unique().tolist()
-    # Only include species from the test set
-    species1 = [x for x in species0 if x in test_df["SPECIES"].unique().tolist()]
+    sus_species = df_ref["SPECIES"].unique().tolist()
     print("Susceptible species:")
-    for i in species1:
+    for i in sus_species:
         print(i)
     # Determine the species that are not in cluster 0
-    species2 = df["SPECIES"].unique().tolist()
-    species2 = [x for x in species1 if x not in species0]
+    nsus_species = df["SPECIES"].unique().tolist()
+    # Remove the species in species_ref from species_nsus
+    nsus_species = [x for x in nsus_species if x not in sus_species]
     # Print as non susceptible species
     print("Non-susceptible species:")
-    for i in species2:
+    for i in nsus_species:
         print(i)
     # Write the susceptible species summary to a text file
     with open(file_dir + "\susceptibility_summary.txt", "w") as f:
         f.write("Susceptible species:\n")
-        for i in species1:
+        for i in sus_species:
             f.write(i + "\n")
         f.write("\nNon-susceptible species:\n")
-        for i in species2:
+        for i in nsus_species:
             f.write(i + "\n")
     print(
         "\nAll of the plots for this analysis have " "been saved to {}".format(file_dir)
