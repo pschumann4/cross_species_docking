@@ -42,8 +42,7 @@ def get_summary():
     )
     # Prompt user for ligand name
     ligand = input(
-        "Enter the name of the ligand, which should match "
-        "the suffix of the log files: "
+        "Enter the name of the ligand: "
     )
     # Initialize lists to hold binding affinities, poses, and species names
     binding_affinities = []
@@ -165,10 +164,32 @@ def get_summary():
     )
     plif_tanimoto_file = plif_tanimoto_file.replace('"', "")
     plif_tanimoto_df = pd.read_csv(plif_tanimoto_file)
-    # Prompt user for the name of the reference model
-    ref_model = input(
-        "Enter the name of the reference model (as listed in the matrix): "
-    )
+
+    # Search for the reference model in the PLIF Tanimoto matrix file
+    ref_model = ""
+    # Loop through each column name in the dataframe
+    for col in plif_tanimoto_df.columns:
+        # If the column name starts with "ref_", ask the user if it is the reference model
+        if col.startswith("ref_"):
+            ref_model = input(
+                "Is {} the reference model? (y/n): ".format(col)
+            )
+            ref_model = ref_model.lower()
+            # Check if the user entered a valid response
+            while ref_model not in ["y", "n"]:
+                ref_model = input(
+                    "Please enter 'y' or 'n': "
+                )
+                ref_model = ref_model.lower()
+            # If the user says yes, break out of the loop
+            if ref_model == "y":
+                ref_model = col
+                break
+    if ref_model == "n":
+        ref_model = input(
+            "Enter the name of the reference model (as listed in the matrix): "
+        )
+
     # Remove the column corresponding to the reference model
     plif_tanimoto_df = plif_tanimoto_df.drop(ref_model, axis=1)
     plif_tanimoto_df = plif_tanimoto_df.set_index(plif_tanimoto_df.columns[0])
@@ -180,7 +201,7 @@ def get_summary():
     print(summary_df)
 
     # Prompt user for an output directory
-    output_dir = input("Enter the output directory: ")
+    output_dir = input("Specify the output directory: ")
     # Create the output file path using the ligand name
     output_file = os.path.join(output_dir, ligand + "_summary.csv")
     # Write the dataframe to a csv file
