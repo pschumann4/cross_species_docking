@@ -60,12 +60,11 @@ def prep_receptors():
         for pdb in pdb_files:
             cmd = "python {} -r {} -v -o {} -A checkhydrogens".format(prep_pdbqt, pdb, pdb[:-4] + ".pdbqt")
             os.system(cmd)
-            shutil.move(pdb[:-4] + ".pdbqt", "pdbqt_files\\" + pdb[:-4] + ".pdbqt")
-        # Check for failed preps
-        pdbqt_files = os.listdir("pdbqt_files")
-        for pdb in pdb_files:
-            if pdb[:-4] + ".pdbqt" not in pdbqt_files:
+            try:
+                shutil.move(pdb[:-4] + ".pdbqt", "pdbqt_files\\" + pdb[:-4] + ".pdbqt")
+            except FileNotFoundError:
                 failed_preps.append(pdb)
+        # Check for failed preps
         if len(failed_preps) > 0:
             print("\nThe following files were not converted to PDBQT:")
             for pdb in failed_preps:
@@ -194,7 +193,7 @@ def prep_receptors():
         for pdbqt in pdbqt_files:
             new_file = []
             if pdbqt.endswith("modified.pdbqt"):
-                print("\nUpdating rigid receptor file for " + pdbqt.split("_", 1)[0] + "...")
+                print("Updating rigid receptor file for " + pdbqt.split("_", 1)[0] + "...")
                 with open(pdbqt, "r") as f:
                     modified = f.readlines()
                 # Match the name of the PDBQT file to the name of the rigid residues file
