@@ -311,20 +311,23 @@ def ligand_rmsd():
             filtered_vina_dir = os.path.join(vina_logs, "filtered_vina_output")
             if not os.path.exists(filtered_vina_dir):
                 os.mkdir(filtered_vina_dir)
-            for file in os.listdir(vina_logs):
-                if file.endswith(".pdbqt") and "bound" in file:
-                    species = file.split("_")[0]
+            vina_files = [i for i in os.listdir(vina_logs) if i.endswith(".pdbqt") and "bound" in i]
+            for file in vina_files:
+                species = file.split("_")[0]
+                if "ligand" in file:
                     model_num = file.split("ligand_")[1].split(".pdbqt")[0]
-                    for pose in best_poses.itertuples():
-                        if pose.species == species and pose.model == int(model_num):
-                            shutil.copy(file, filtered_vina_dir)
-                    for pose in worst_poses.itertuples():
-                        if pose.species == species and pose.model == int(model_num):
-                            shutil.copy(file, filtered_vina_dir)
-            print(
-                "DONE! The best and worst poses have been copied to "
-                'the "filtered_vina_output" folder.'
-            )
+                if "flex" in file:
+                    model_num = file.split("flex_")[1].split(".pdbqt")[0]
+                for pose in best_poses.itertuples():
+                    if pose.species == species and pose.model == int(model_num):
+                        shutil.copy(file, filtered_vina_dir)
+                for pose in worst_poses.itertuples():
+                    if pose.species == species and pose.model == int(model_num):
+                        shutil.copy(file, filtered_vina_dir)
+        print(
+            "DONE! The best and worst poses have been copied to "
+            'the "filtered_vina_output" folder.'
+        )
 
 
 if __name__ == "__main__":
