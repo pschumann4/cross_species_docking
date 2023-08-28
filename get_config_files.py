@@ -107,39 +107,63 @@ def get_config_files():
             confirm = confirm.lower()
         if confirm == "y":
             break
-    # Get flexibility info
+        
     while True:
         # Create separate lists to store all of the config file information
         flex_pdbqt_files = []
         rigid_pdbqt_files = []
         pdbqt_files = [i for i in os.listdir(pwd) if i.endswith(".pdbqt") and ligand_name not in i and "residues" not in i]
-        # Loop through the files in the directory
-        for file in pdbqt_files:
-            # Get the base name of the file
-            base_name = file.split(".pdbqt")[0]
-            # Ask the user if the file is flexible or rigid
-            is_flex = input(
-                "Should " + base_name + " be treated as flexible? (y/n): "
-            )
-            # Convert the user input to lower case
-            is_flex = is_flex.lower()
-            # Check if the user input is valid
-            while is_flex != "y" and is_flex != "n":
-                print("You did not enter a valid input.")
-                is_flex = input(
-                    "Should " + base_name + " be treated as flexible? (y/n): "
+        # Ask if there are any flexible residues
+        flex = input("Are there any flexible residues? (y/n): ")
+        flex = flex.lower()
+        # Check if the user input is valid
+        while flex not in ["y", "n"]:
+            print("You did not enter a valid input.")
+            flex = input("Are there any flexible residues? (y/n): ")
+            flex = flex.lower()
+        if flex == "y":
+            # Prompt user for the path to the flex_residues.txt file
+            residues = input("Enter the path to the flex_residues.txt file: ")
+            if residues.startswith('"') and residues.endswith('"'):
+                residues = residues[1:-1]
+            # Check if the path exists and if not, ask for it again
+            while not os.path.exists(residues):
+                residues = input(
+                    "That path does not appear to exist.\nPlease enter the path to "
+                    "the flex_residues.txt file: "
                 )
-                is_flex = is_flex.lower()
-            if is_flex == "y":
-                # Add the base name to the flex_pdbqt_files list
-                flex_pdbqt_files.append(base_name)
-            elif is_flex == "n":
-                # Add the base name to the rigid_pdbqt_files list
+                if residues.startswith('"') and residues.endswith('"'):
+                    residues = residues[1:-1]
+            # Read the flex_residues.txt file
+            with open(residues, "r") as f:
+                res_list = f.readlines()
+                # Remove header and footer lines
+                res_list = res_list[2:-2]
+
+            # Loop through the files in the directory
+            for file in pdbqt_files:
+                # Get the base name of the file
+                base_name = file.split(".pdbqt")[0]
+                for line in res_list:
+                    if line.split(":")[0] == base_name:
+                        res = line.split("[")[1].split("]")[0]
+                        if res == "":
+                            rigid_pdbqt_files.append(base_name)
+                        else:
+                            flex_pdbqt_files.append(base_name)
+        else:
+            # If there are no flexible residues, add all to the rigid_pdbqt_files list
+            for file in pdbqt_files:
+                base_name = file.split(".pdbqt")[0]
                 rigid_pdbqt_files.append(base_name)
         # Ask the user if the entries are correct
         print("\nIS THE FOLLOWING INFORMATION CORRECT?")
-        print("Flexible PDBQT files: " + str(flex_pdbqt_files))
-        print("Rigid PDBQT files: " + str(rigid_pdbqt_files))
+        print("FLEXIBLE PDBQTs: ")
+        for i in flex_pdbqt_files:
+            print(i)
+        print("RIGID PDBQTs: ")
+        for i in rigid_pdbqt_files:
+            print(i)
         confirm = input("(y/n): ")
         confirm = confirm.lower()
         # Check if the user input is valid
