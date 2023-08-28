@@ -65,13 +65,13 @@ def min_dist(pdb_file, ligand, min_cutoff=5):
     return min_dist
 
 
-def residue_dist(pdb1, pdb2, dist_cutoff=3):
+def residue_dist(ref_pdb, pdb2, dist_cutoff=3):
     """
     Determines the residues that have an atom that is greater than 3 Angstroms
     away from the corresponding atom in the reference structure.
     """
     # Read the PDB files
-    with open(pdb1, "r") as f:
+    with open(ref_pdb, "r") as f:
         lines1 = f.readlines()
     with open(pdb2, "r") as f:
         lines2 = f.readlines()
@@ -126,17 +126,17 @@ def residue_dist(pdb1, pdb2, dist_cutoff=3):
     return filtered_dist
 
 
-def compare_pdbs(pdb1, pdb2, ligand):
+def compare_pdbs(ref_pdb, pdb2, ligand):
     """
     Uses the min_dist and residue_dist functions to determine the top 10 flexible residues
     (i.e., those that are the most distant from the reference structure).
     """
     # Calculate the minimum distance between the ligand and the residue atoms
     # on a per residue basis in the first pdb file
-    close_residues = min_dist(pdb1, ligand)
+    close_residues = min_dist(ref_pdb, ligand)
     close_residues = close_residues.keys()
     # Get the list of flexible residues
-    flex_residues = residue_dist(pdb1, pdb2)
+    flex_residues = residue_dist(ref_pdb, pdb2)
     # Filter the list of flexible residues to only include residues
     # that are in the close_residues list
     flex_residues_close = {
@@ -169,33 +169,49 @@ def get_flex_residues():
     Main function
     """
     # Ask the used for the name of the working directory
-    working_dir = input(
+    cwd = input(
         "Enter the name of the file directory containing the PDB files to analyze: "
     )
-    if check_exit(working_dir):
+    if check_exit(cwd):
         return
     # Set the path to the working directory
-    os.chdir(working_dir)
+    os.chdir(cwd)
     # Ask the user for the name of the ligand
     ligand = input("Enter the ligand ID as it is found within the reference PDB: ")
     if check_exit(ligand):
         return
-    # Ask the user for the reference (pdb1)
-    pdb1 = input("Enter the name of the reference structure (with ligand bound): ")
-    if not pdb1.endswith(".pdb"):
-        pdb1 += ".pdb"
-    # Check that the pdb file exists and if not, ask the user to enter it again
-    while not os.path.exists(pdb1):
-        print("This pdb file does not exist.")
-        pdb1 = input(
-            "Enter the name of the reference structure (with the ligand bound): "
-        )
-        if check_exit(pdb1):
+    
+    # Search the directory for a file that starts with "ref_"
+    ref_pdb = ""
+    pdb_files = [i for i in os.listdir(cwd) if i.endswith(".pdb")]
+    for file in pdb_files:
+        if file.startswith("ref_"):
+            ref = input("Is {} the reference PDB file? (y/n): ".format(file))
+            ref = ref.lower()
+            # check for valid input
+            while ref.lower() not in ["y", "n"]:
+                ref = input("Please enter y or n: ")
+            if ref == "y":
+                ref_pdb = file
+                break
+    if ref == "n":
+        ref_pdb = input("Enter the name of the reference PDB file: ")
+        if check_exit(ref_pdb):
             return
-        if not pdb1.endswith(".pdb"):
-            pdb1 += ".pdb"
+        if not ref_pdb.endswith(".pdb"):
+            ref_pdb += ".pdb"
+        while not os.path.exists(ref_pdb):
+            print(
+                "Error: This file does not appear to exist."
+            )
+            ref_pdb = input("Enter the file name of the reference PDB file: ")
+            if not ref_pdb.endswith(".pdb"):
+                ref_pdb += ".pdb"
+            if check_exit(ref_pdb):
+                return
+            
     # Check that the pdb file contains the ligand
-    with open(pdb1, "r") as f:
+    with open(ref_pdb, "r") as f:
         lines = f.readlines()
     ligand_in_pdb = False
     for line in lines:
@@ -205,31 +221,31 @@ def get_flex_residues():
     # If the ligand is not in the pdb file, ask the user to enter it again
     while not ligand_in_pdb:
         print("This pdb file does not contain the ligand.")
-        pdb1 = input(
+        ref_pdb = input(
             "Enter the name of the reference structure "
             'containing the ligand or type "exit": '
         )
-        if check_exit(pdb1):
+        if check_exit(ref_pdb):
             return
     # Check that the pdb file exists
     # and if not, ask the user to enter the name of the pdb file again
-    while not os.path.exists(pdb1):
+    while not os.path.exists(ref_pdb):
         print("This pdb file does not exist.")
-        pdb1 = input(
+        ref_pdb = input(
             "Enter the name of the reference structure containing "
             'the ligand or type "exit": '
         )
-        if check_exit(pdb1):
+        if check_exit(ref_pdb):
             return
     # Get the base name of the binding site structure file
-    pdb1_base = os.path.basename(pdb1)
+    ref_pdb_base = os.path.basename(ref_pdb)
     # Get the name of the binding site structure file as the
     # characters before the first underscore
-    pdb1_name = pdb1_base.split("_")[0]
+    ref_pdb_name = ref_pdb_base.split("_")[0]
     # Get the pdb files that are not the reference binding site
     pdb2s = []
     for file in os.listdir():
-        if file.endswith(".pdb") and file != pdb1 and pdb1_name not in file:
+        if file.endswith(".pdb") and file != ref_pdb and ref_pdb_name not in file:
             pdb2s.append(file)
     # Check that there are pdb files in the working directory
     # that are not the reference binding site
@@ -243,7 +259,7 @@ def get_flex_residues():
     for pdb2 in pdb2s:
         # State which pdb file is being processed
         print("Processing %s" % pdb2 + "...")
-        flex_residues[pdb2] = compare_pdbs(pdb1, pdb2, ligand)
+        flex_residues[pdb2] = compare_pdbs(ref_pdb, pdb2, ligand)
         # Check if there are any flexible residues
         if len(flex_residues[pdb2]) == 0:
             print("No flexible residues were found.")
