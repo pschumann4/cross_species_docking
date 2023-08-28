@@ -11,6 +11,7 @@ import shutil
 
 import numpy as np
 import pandas as pd
+import matplotlib.pyplot as plt
 
 
 def check_exit(input_str):
@@ -187,6 +188,18 @@ def ligand_rmsd():
             "The ligand RMSD values were written to ligand_rmsd.txt "
             "in your working directory."
         )
+
+    # Plot the RMSD values as a histogram
+    rmsd_values = []
+    # Iterate through the dictionary and add the RMSD values to the list
+    for rmsd in rmsd_dict.values():
+        rmsd_values.append(rmsd)
+    plt.hist(rmsd_values, bins=30)
+    plt.xlabel("RMSD")
+    plt.ylabel("Frequency")
+    plt.tight_layout()
+    plt.savefig("ligand_rmsd.png", dpi=300)
+    plt.show()
 
     # Determine best and worst poses?
     filter_poses = input(
