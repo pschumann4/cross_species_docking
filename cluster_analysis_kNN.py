@@ -66,6 +66,11 @@ def cluster_analysis():
                 va="center",
                 color="black",
             )
+    # Change the label plif_tanimoto to PLIF Tanimoto
+    labels = [item.get_text() for item in plt.gca().get_xticklabels()]
+    labels = ["Binding Affinity", "PPS-Score", "Ligand RMSD", "PLIF Tc"]
+    plt.gca().set_xticklabels(labels)
+    plt.gca().set_yticklabels(labels)
     plt.tight_layout()
     # Save the figure
     plt.savefig(file_dir + "\correlation_plot.png", dpi=300)
