@@ -1,0 +1,46 @@
+CRYST1   55.500   66.300   70.700  90.00  90.00  90.00 P 21 21 21    4
+HETATM    1  C1  DHT A1001      27.333   5.146   4.391  1.00 28.58      C    C  
+HETATM    2  C2  DHT A1001      26.429   6.316   4.843  1.00 29.67      C    C  
+HETATM    3  C3  DHT A1001      24.996   6.070   4.217  1.00 31.35      C    C  
+HETATM    4  O3  DHT A1001      24.607   7.027   3.542  1.00 29.06      C    O  
+HETATM    5  C4  DHT A1001      24.457   4.947   4.470  1.00 28.05      C    C  
+HETATM    6  C5  DHT A1001      25.298   3.711   3.991  1.00 27.71      C    C  
+HETATM    7  C6  DHT A1001      24.602   2.330   4.266  1.00 30.61      C    C  
+HETATM    8  C7  DHT A1001      25.489   1.178   3.736  1.00 27.94      C    C  
+HETATM    9  C8  DHT A1001      26.903   1.155   4.418  1.00 29.45      C    C  
+HETATM   10  C9  DHT A1001      27.595   2.546   4.176  1.00 28.63      C    C  
+HETATM   11  C10 DHT A1001      26.723   3.762   4.709  1.00 27.91      C    C  
+HETATM   12  C11 DHT A1001      29.014   2.494   4.830  1.00 27.78      C    C  
+HETATM   13  C12 DHT A1001      29.930   1.352   4.399  1.00 27.69      C    C  
+HETATM   14  C13 DHT A1001      29.243  -0.037   4.508  1.00 28.83      C    C  
+HETATM   15  C14 DHT A1001      27.819   0.036   3.848  1.00 28.82      C    C  
+HETATM   16  C15 DHT A1001      27.337  -1.425   3.977  1.00 30.55      C    C  
+HETATM   17  C16 DHT A1001      28.619  -2.223   3.590  1.00 30.01      C    C  
+HETATM   18  C17 DHT A1001      29.778  -1.191   3.680  1.00 29.08      C    C  
+HETATM   19  O17 DHT A1001      30.926  -1.817   4.264  1.00 32.95      C    O  
+HETATM   20  C18 DHT A1001      29.164  -0.442   6.035  1.00 28.37      C    C  
+HETATM   21  C19 DHT A1001      26.561   3.623   6.279  1.00 26.66      C    C  
+HETATM   22  H01 DHT A1001      31.219  -2.538   3.701  1.00 32.95      C    H  
+CONECT    1    2   11
+CONECT    2    1    3
+CONECT    3    2    4    5
+CONECT    4    3
+CONECT    5    3    6
+CONECT    6    5    7   11
+CONECT    7    6    8
+CONECT    8    7    9
+CONECT    9    8   10   15
+CONECT   10    9   11   12
+CONECT   11    1    6   10   21
+CONECT   12   10   13
+CONECT   13   12   14
+CONECT   14   13   15   18   20
+CONECT   15    9   14   16
+CONECT   16   15   17
+CONECT   17   16   18
+CONECT   18   14   17   19
+CONECT   19   18   22
+CONECT   20   14
+CONECT   21   11
+CONECT   22   19
+END
