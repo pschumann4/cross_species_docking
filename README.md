@@ -38,7 +38,9 @@ MGLTools will need to be installed so that the user can utilize the MolKit modul
 
 The PPS-align source code will need to be [downloaded](https://zhanggroup.org/PPS-align/download.html) and compiled.
 
-"PPSalign" will then need to be set as an environment variable in PATH to run the "ppsalign_loop.py" script.
+**NOTE:** To complie PPS-align, you will need the g++ compiler-driver installed. For Windows, you can use [MSYS2](https://www.msys2.org/), if you don't have one already.
+
+"PPSalign" will then need to be set as an environment variable in PATH to run the "ppsalign_loop.py" script. Otherwise, you can update the script directly by replacing the "PPSalign" variable with the path to the compiled PPS-align program.
 
 ### 4. Protein-Ligand Interaction Profiler (PLIP) Tool
 It is recommended that this is [installed](https://github.com/pharmai/plip) using conda:
