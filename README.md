@@ -54,6 +54,9 @@ The "batch_plipcmd.bat" function should then be ran using a terminal within the 
 The latest release of AutoDock Vina can be installed from [here](https://github.com/ccsb-scripps/AutoDock-Vina/releases).
 
 The variable, "vina", will need to be added to the users PATH to run the "batch_vina.bat" function directly. Otherwise, the user will need to replace the instance of "vina" in this script with the path to the vina.exe found in their system.
+
+### 6. MUSCLE
+The [MUSCLE](https://drive5.com/muscle5/) (MUltiple Sequence Comparison by Log- Expectation) execuetable program will need to be downloaded and added to PATH renamed as "muscle.exe." The program can be downloaded [here](https://github.com/rcedgar/muscle/releases/tag/5.1.0).
 ## Steps for cross-species docking analysis
 **IMPORTANT**: To make susceptibility predictions on a set of species structures, the user will need to perform this process twice. Once with an ensemble set of reference species structures, and then again with the set of query species structures.
 
