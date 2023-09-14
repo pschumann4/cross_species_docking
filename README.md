@@ -63,7 +63,7 @@ The [MUSCLE](https://drive5.com/muscle5/) (MUltiple Sequence Comparison by Log- 
 ### 1. Get protein structures
 For an ensemble analysis, we recommend the user obtains these via an "Advanced Search" within the [RCSB PDB](https://www.rcsb.org/).
 
-For a query structure analysis, we recommend that the user obtains species protein structures from the [Sequence Alignment to Predict Across Species Susceptibility (SeqAPASS) tool](https://seqapass.epa.gov/seqapass/) via Level 4 evaluations. However, strcutures could be derived from any available source (i.e., [RCSB PDB](https://www.rcsb.org/) or [AlphaFold DB](https://alphafold.com/)). 
+For a query structure analysis, we recommend that the user obtains species protein structures from the [Sequence Alignment to Predict Across Species Susceptibility (SeqAPASS) tool](https://seqapass.epa.gov/seqapass/) via Level 4 evaluations. However, structures could be derived from any available source (i.e., [RCSB PDB](https://www.rcsb.org/) or [AlphaFold DB](https://alphafold.com/)). 
 
 All structure files must be in PDB format! 
 
