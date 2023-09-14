@@ -90,7 +90,7 @@ Run the "multiple_prot_align.py" script.
 
 In addition to generating a new set of modified PDBs, this will create a folder called "details" in the PDB file directory with information on the alignments as well as a CSV file called "residue_positions.csv" that can be useful for converting the new residue positions back to their original positions, if desired.
 ### 3. Determine the grid box area for the docking simulation
-Run the "get_poc.py" script and when prompted, input "single" and select the reference structure with the chemical of interest bound.
+Run the "get_poc.py" script and when prompted, input "single" and select the reference structure with the chemical of interest bound, which can be found in the "original_structures" folder.
 
 The user will be prompted as to whether they would like to generate a gridbox file. Select "y". We recommend that you save the outputted files in the "details" folder.
 ### 4. Determine flexible residues
