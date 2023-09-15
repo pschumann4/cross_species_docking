@@ -123,7 +123,6 @@ Then, run the "add_ligand.py" script using that folder to add the Vina-generated
 This script will move all of the PDB models into a new folder called "models."
 ### 9. Calculate ligand RMSD
 Run the "ligand_rmsd.py" script.
-If running an ensemble analysis, the results should be sorted into "best" and "worst" at this step.
 
 **NOTE**: If the user is performing this step for the ensemble docking phase, we recommend that they choose "y" when prompted to filter the models for the "best" and "worst."
 ### 10. Calculate binding pocket similarity scores
