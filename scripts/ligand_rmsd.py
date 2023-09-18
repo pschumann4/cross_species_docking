@@ -276,6 +276,8 @@ def ligand_rmsd():
                 for pose in worst_poses.itertuples():
                     if pose.species == species and pose.model == int(model_num):
                         shutil.copy(model, filtered_models_dir)
+            if model.startswith("ref_"):
+                shutil.copy(model, filtered_models_dir)
 
         print(
             "DONE! The best and worst poses have been copied "
