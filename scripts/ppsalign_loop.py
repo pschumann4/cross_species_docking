@@ -5,6 +5,7 @@
 """
 
 import os
+import shutil
 
 
 def ppsalign_loop():
@@ -68,7 +69,7 @@ def ppsalign_loop():
         os.mkdir("PPS_files")
     for file in os.listdir(poc_dir):
         if file.endswith("_PPS.txt"):
-            os.rename(file, "PPS_files/" + file)
+            shutil.move(file, "PPS_files")
     print("Done!")
 
 
