@@ -195,15 +195,18 @@ def ligand_rmsd():
     for rmsd in rmsd_dict.values():
         rmsd_values.append(rmsd)
     plt.hist(rmsd_values, bins=30)
-    plt.xlabel("RMSD")
-    plt.ylabel("Frequency")
+    plt.xlabel("RMSD (Å)", fontsize=18)
+    plt.ylabel("Frequency", fontsize=18)
+    for patch in plt.gca().patches:
+        patch.set_facecolor("#A4D4F7")
+        patch.set_edgecolor("black")
     plt.tight_layout()
     plt.savefig("ligand_rmsd.png", dpi=300)
     plt.show()
 
     # Determine best and worst poses?
     filter_poses = input(
-        "\nWould you like to sort the models as " "best/worst based on RMSD? (y/n): "
+        "\nWould you like to filter the best/worst models based on RMSD? (y/n): "
     )
     filter_poses = filter_poses.lower()
     while filter_poses not in ["y", "n"]:
@@ -222,8 +225,13 @@ def ligand_rmsd():
             model = [line[0].split("model")[1].split(":")[0] for line in lines[2:]]
         # Add the ligand RMSD values to the dataframe
         lig_rmsd_df["lig_rmsd"] = lig_rmsds
+        lig_rmsd_df["lig_rmsd"] = lig_rmsd_df["lig_rmsd"].astype(float)
         lig_rmsd_df["species"] = species
         lig_rmsd_df["model"] = model
+
+        # Rmove any models that have a ligand RMSD > 10 Å
+        lig_rmsd_df = lig_rmsd_df[lig_rmsd_df["lig_rmsd"] < 10]
+
         # For each species in the dataframe, find the best and worst pose
         best_poses = []
         worst_poses = []
@@ -310,6 +318,53 @@ def ligand_rmsd():
             "the best and worst poses."
         )
 
+        # Re-create the histogram with the best and worst poses highlighted
+        rmsd_values = []
+        # Iterate through the dictionary and add the RMSD values to the list
+        for rmsd in rmsd_dict.values():
+            rmsd_values.append(rmsd)
+        plt.hist(rmsd_values, bins=30)
+        plt.xlabel("RMSD (Å)", fontsize=18)
+        plt.ylabel("Frequency", fontsize=18)
+        # Add vertical lines to show the range of the best and worst poses
+        max_best = best_poses["lig_rmsd"].max()
+        min_best = best_poses["lig_rmsd"].min()
+        plt.axvline(
+            x=max_best,
+            color="#EB0744",
+            linestyle="--",
+            label="Best poses",
+            linewidth=2,
+        )
+        plt.axvline(
+            x=min_best,
+            color="#EB0744",
+            linestyle="--",
+            linewidth=2,
+        )
+        max_worst = worst_poses["lig_rmsd"].max()
+        min_worst = worst_poses["lig_rmsd"].min()
+        plt.axvline(
+            x=max_worst,
+            color="#062576",
+            linestyle="--",
+            label="Worst poses",
+            linewidth=2,
+        )
+        plt.axvline(
+            x=min_worst,
+            color="#062576",
+            linestyle="--",
+            linewidth=2,
+        )
+        for patch in plt.gca().patches:
+            patch.set_facecolor("#A4D4F7")
+            patch.set_edgecolor("black")
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig("labeled_ligand_rmsd.png", dpi=300)
+        plt.show()
+
         filter_vina = input(
             "\nWould you like to filter the Vina output according to RMSD "
             "as well? (y/n): "
@@ -339,6 +394,7 @@ def ligand_rmsd():
                 for pose in worst_poses.itertuples():
                     if pose.species == species and pose.model == int(model_num):
                         shutil.copy(file, filtered_vina_dir)
+
         print(
             "DONE! The best and worst poses have been copied to "
             'the "filtered_vina_output" folder.'
