@@ -160,7 +160,7 @@ def get_summary():
 
     # Prompt user for the PLIF Tanimoto file
     plif_tanimoto_file = input(
-        "Enter the file path for the PLIF Tanimoto matrix file: "
+        "Enter the file path for the PLIF Tanimoto matrix .csv file: "
     )
     plif_tanimoto_file = plif_tanimoto_file.replace('"', "")
     plif_tanimoto_df = pd.read_csv(plif_tanimoto_file)

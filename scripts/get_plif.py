@@ -334,9 +334,7 @@ def PLIP_PLIFs():
         'with "_protonated.pdb".\nType "exit" at any prompt to exit the program.\n'
     )
     # Ask the user to enter the working directory
-    cwd = input('Enter your working directory (type "cd" or "current" to skip): ')
-    if cwd == "current" or cwd == "cd":
-        cwd = os.getcwd()
+    cwd = input("Enter the directory containing the PLIP .xml files and protonated PDBs: ")
     if check_exit(cwd):
         return
     # Check that the directory exists
@@ -345,7 +343,7 @@ def PLIP_PLIFs():
             "Error: This directory does not exist. "
             "Make sure that the directory path is correct.\n"
         )
-        cwd = input("Enter your working directory: ")
+        cwd = input("Enter the directory containing the PLIP .xml files and protonated PDBs: ")
         if check_exit(cwd):
             return
     # Change the working directory

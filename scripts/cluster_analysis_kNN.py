@@ -192,11 +192,11 @@ def cluster_analysis():
     df.to_csv(file_dir + "\kmeans_clustering_summary.csv", index=False)
 
     # Ask the user for the name of the self-docking pose
-    self_dock_species = input("Enter the species name of the self-docking pose to be used as a pseudo-reference (case sensitive): ")
+    self_dock_species = input("Enter the species/PDB name of the self-docking pose (case sensitive): ")
     while self_dock_species not in df["species"].unique().tolist():
-        self_dock_species = input("The species name entered is not found in the dataframe. Please enter the species name again: ")
+        self_dock_species = input("The species/PDB name entered is not found in the dataframe. Please enter the name again: ")
     # Ask the user for the pose number of the self-docking pose
-    self_dock_pose = input("Enter the pose number of the self-docking pose to be used as a pseudo-reference: ")
+    self_dock_pose = input('Enter the pose number of the "best" self-docking pose: ')
     df.columns = [col.upper() for col in df.columns]
 
     # Plot the clusters in 2D using seaborn
@@ -307,26 +307,22 @@ def cluster_analysis():
     # Add the cluster labels to the dataframe
     test_df["CLUSTER"] = Z
 
-    # Remove the PCA columns by reloading the summary file
-    train_df = pd.read_csv(summary_file)
-    train_df["binding_affinity"] = train_df["binding_affinity"] * -1
-    train_df["lig_rmsd"] = train_df["lig_rmsd"] * -1
-    train_df.iloc[:, 3:] = (train_df.iloc[:, 3:] - train_df.iloc[:, 3:].mean()) / train_df.iloc[:, 3:].std()
-    train_df.columns = [col.upper() for col in train_df.columns]
+    # Remove the PCA columns from the original dataframe
+    train_df = df.iloc[:, :7]
     # Add the cluster labels
     train_df["CLUSTER"] = Y
 
     # Combine with the original dataframe
-    df = pd.concat([train_df, test_df])
+    comb_df = pd.concat([train_df, test_df])
 
     # Perform PCA on the combined dataframe for visualization
     print("\nPerforming PCA to reduce the data to 3 dimensions...")
     pca = PCA(n_components=3)
-    principal_components = pca.fit_transform(df.iloc[:, 3:7])
+    principal_components = pca.fit_transform(comb_df.iloc[:, 3:7])
     # Add the principal components to the dataframe
-    df["PCA1"] = principal_components[:, 0]
-    df["PCA2"] = principal_components[:, 1]
-    df["PCA3"] = principal_components[:, 2]
+    comb_df["PCA1"] = principal_components[:, 0]
+    comb_df["PCA2"] = principal_components[:, 1]
+    comb_df["PCA3"] = principal_components[:, 2]
 
     # Determine the loadings of the principal components
     loadings = pca.components_.T * np.sqrt(pca.explained_variance_)
@@ -334,7 +330,7 @@ def cluster_analysis():
     print("\nThe loadings of the principal components are:\n")
     print(
         pd.DataFrame(
-            loadings, columns=["PC1", "PC2", "PC3"], index=df.iloc[:, 3:7].columns
+            loadings, columns=["PC1", "PC2", "PC3"], index=comb_df.iloc[:, 3:7].columns
         )
     )
     pd.DataFrame(
@@ -344,11 +340,11 @@ def cluster_analysis():
             "PC2 ({:.2f}%)".format(pca.explained_variance_ratio_[1] * 100),
             "PC3 ({:.2f}%)".format(pca.explained_variance_ratio_[2] * 100),
         ],
-        index=df.iloc[:, 3:7].columns,
+        index=comb_df.iloc[:, 3:7].columns,
     ).to_csv(file_dir + "\pca_loadings.csv")
 
     # Save the dataframe to a csv file
-    df.to_csv(file_dir + "\\predicted_clustering_summary.csv", index=False)
+    comb_df.to_csv(file_dir + "\\predicted_clustering_summary.csv", index=False)
 
     # Get a list of all the species names from the train_df
     train_species = train_df["SPECIES"].unique().tolist()
@@ -361,16 +357,16 @@ def cluster_analysis():
     sns.set(font_scale=1.2)
     sns.set_style("whitegrid")
     sns.scatterplot(
-        x="PCA1", y="PCA2", hue="CLUSTER", data=df, palette=cmap.colors, legend="full", s=35
+        x="PCA1", y="PCA2", hue="CLUSTER", data=comb_df, palette=cmap.colors, legend="full", s=35
     )
-    sns.move_legend(plt.gca(), "upper center", bbox_to_anchor=(0.5, 1.15), ncol = len(df["CLUSTER"].unique().tolist()), title=None)
+    sns.move_legend(plt.gca(), "upper center", bbox_to_anchor=(0.5, 1.15), ncol = len(comb_df["CLUSTER"].unique().tolist()), title=None)
     plt.xlabel("PC1 ({:.2f}%)".format(pca.explained_variance_ratio_[0] * 100))
     plt.ylabel("PC2 ({:.2f}%)".format(pca.explained_variance_ratio_[1] * 100))
     # Label all the species in found in the train_species list
     for i in train_species:
         plt.scatter(
-            df.loc[(df["SPECIES"] == i), "PCA1"],
-            df.loc[(df["SPECIES"] == i), "PCA2"],
+            comb_df.loc[(comb_df["SPECIES"] == i), "PCA1"],
+            comb_df.loc[(comb_df["SPECIES"] == i), "PCA2"],
             s=35,
             facecolors="none",
             edgecolors="black",
@@ -392,15 +388,15 @@ def cluster_analysis():
             'The plot will be saved as "combined_cluster_plot_3D.png".'
         )
         cmap = LinearSegmentedColormap.from_list(
-            "custom", cmap.colors[: len(df["CLUSTER"].unique().tolist())]
+            "custom", cmap.colors[: len(comb_df["CLUSTER"].unique().tolist())]
         )
         fig = plt.figure(figsize=(8, 8))
         ax = fig.add_subplot(111, projection="3d")
         ax.scatter(
-            df["PCA1"],
-            df["PCA2"],
-            df["PCA3"],
-            c=df["CLUSTER"],
+            comb_df["PCA1"],
+            comb_df["PCA2"],
+            comb_df["PCA3"],
+            c=comb_df["CLUSTER"],
             cmap=cmap,
             s=35,
             alpha=0.65,
@@ -408,9 +404,9 @@ def cluster_analysis():
         # Label all the species in found in the train_species list
         for i in train_species:
             ax.scatter(
-                df.loc[(df["SPECIES"] == i), "PCA1"],
-                df.loc[(df["SPECIES"] == i), "PCA2"],
-                df.loc[(df["SPECIES"] == i), "PCA3"],
+                comb_df.loc[(comb_df["SPECIES"] == i), "PCA1"],
+                comb_df.loc[(comb_df["SPECIES"] == i), "PCA2"],
+                comb_df.loc[(comb_df["SPECIES"] == i), "PCA3"],
                 s=35,
                 alpha=1,
                 facecolors="none",
@@ -426,19 +422,19 @@ def cluster_analysis():
         plt.show()
 
     # Find the cluster for the self-docking pose
-    ref_cluster = df.loc[
-        (df["SPECIES"] == self_dock_species) & (df["POSE"] == int(self_dock_pose)),
+    ref_cluster = comb_df.loc[
+        (comb_df["SPECIES"] == self_dock_species) & (comb_df["POSE"] == int(self_dock_pose)),
         "CLUSTER",
     ].values[0]
     # Filter the dataframe to only include the reference cluster
-    df_ref = df[df["CLUSTER"] == ref_cluster]
+    df_ref = comb_df[comb_df["CLUSTER"] == ref_cluster]
     # Get the list of species in cluster 0
     sus_species = df_ref["SPECIES"].unique().tolist()
     print("Susceptible species:")
     for i in sus_species:
         print(i)
     # Determine the species that are not in cluster 0
-    nsus_species = df["SPECIES"].unique().tolist()
+    nsus_species = comb_df["SPECIES"].unique().tolist()
     # Remove the species in species_ref from species_nsus
     nsus_species = [x for x in nsus_species if x not in sus_species]
     # Print as non susceptible species
