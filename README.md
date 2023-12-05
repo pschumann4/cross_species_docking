@@ -108,6 +108,12 @@ Occasionally, files will fail to prep and will be moved into a separate folder c
 ### 6. Create AutoDock Vina configuration files
 Run the "get_config_files.py" script.
 
+Recommended configurations:
+Spacing = 1
+Number of modes = 3-5
+Energy range = 10
+Exhaustiveness = 8
+
 The user will need the grid box information generated from step 3 and the "flex_residues.txt" file generated in step 4.
 ### 7. Perform the docking simulation
 Ensure that the chemical of interest to be used in the docking simulation has been prepped as a PDBQT file with polar hydrogens and charges added. Then add the ligand PDBQT file to the same directory as the protein receptor PDBQT files.
