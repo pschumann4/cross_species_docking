@@ -57,6 +57,10 @@ The variable, "vina", will need to be added to the users PATH to run the "batch_
 
 ### 6. MUSCLE
 The [MUSCLE](https://drive5.com/muscle5/) (MUltiple Sequence Comparison by Log- Expectation) execuetable program will need to be downloaded and added to PATH renamed as "muscle.exe." The program can be downloaded [here](https://github.com/rcedgar/muscle/releases/tag/5.1.0).
+
+### 7. PyMOL (open-source)
+Instructions for installing open-source PyMOL for Windows can be found [here](https://pymolwiki.org/index.php/Windows_Install#Open-Source_PyMOL).
+
 ## Steps for cross-species docking analysis
 **IMPORTANT**: To make susceptibility predictions on a set of species structures, the user will need to perform this process twice. Once with an ensemble set of reference species structures, and then again with the set of query species structures.
 
