@@ -86,6 +86,8 @@ or
 Homo-sapiens_AR.pdb
 ```
 ### 2. Multiple protein sequence and structural alignments
+Ensure that the reference structure is in the same folder as the query structures.
+
 Run the "multiple_prot_align.py" script.
 
 In addition to generating a new set of modified PDBs, this will create a folder called "details" in the PDB file directory with information on the alignments as well as a CSV file called "residue_positions.csv" that can be useful for converting the new residue positions back to their original positions, if desired.
@@ -108,13 +110,15 @@ Occasionally, files will fail to prep and will be moved into a separate folder c
 ### 6. Create AutoDock Vina configuration files
 Run the "get_config_files.py" script.
 
+The user will need the grid box information generated from step 3 and the "flex_residues.txt" file generated in step 4.
+
 Recommended configurations:
+```
 Spacing = 1
 Number of modes = 3-5
 Energy range = 10
 Exhaustiveness = 8
-
-The user will need the grid box information generated from step 3 and the "flex_residues.txt" file generated in step 4.
+```
 ### 7. Perform the docking simulation
 Ensure that the chemical of interest to be used in the docking simulation has been prepped as a PDBQT file with polar hydrogens and charges added. Then add the ligand PDBQT file to the same directory as the protein receptor PDBQT files.
 
