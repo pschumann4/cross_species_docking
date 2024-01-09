@@ -4,7 +4,7 @@ configparser==5.3.0
 contourpy==1.1.0
 cycler==0.11.0
 et-xmlfile==1.1.0
-fonttools==4.40.0
+fonttools==4.43.0
 joblib==1.2.0
 kiwisolver==1.4.4
 kneed==0.8.3
