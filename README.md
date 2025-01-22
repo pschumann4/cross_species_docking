@@ -18,10 +18,10 @@ python "path/to/script_file.py"
 This code was developed using Windows 11. It is unknown to the authors whether these scripts will work as intended on other operating systems.
 
 ### 1. Python 3
-The user will need to have [Python 3](https://www.python.org/downloads/) installed on their computer.
+You will need to have [Python 3](https://www.python.org/downloads/) installed.
 
 ### 2. Anaconda or Miniconda
-[Miniconda](https://docs.anaconda.com/miniconda/install/) is the suggested Anaconda Distribution, but users can use Anaconda as well. All the scripts in this repository will need to be run in your conda environment.
+[Miniconda](https://docs.anaconda.com/miniconda/install/) is the suggested Anaconda Distribution, but users can use Anaconda as well. All the scripts in this repository will need to be run in the conda environment.
 
 ### 3. PPS-align
 
