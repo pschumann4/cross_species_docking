@@ -60,6 +60,7 @@ cd cross_species_docking
 ```
 
 4. Set up conda environment:
+
 First, install conda-lock
 ```
 conda install -c conda-forge conda-lock
