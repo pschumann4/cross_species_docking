@@ -23,7 +23,7 @@ The user will need to have [Python 3](https://www.python.org/downloads/) install
 ### 2. Anaconda or Miniconda
 [Miniconda](https://docs.anaconda.com/miniconda/install/) is the suggested Anaconda Distribution, but users can use Anaconda as well. All the scripts in this repository will need to be run in your conda environment.
 
-## 3. PPS-align
+### 3. PPS-align
 
 The PPS-align source code will need to be [downloaded](https://zhanggroup.org/PPS-align/download.html) and compiled.
 
@@ -54,11 +54,27 @@ cd C:\Users\pschuman\Documents
 ```
 git clone https://github.com/pschumann4/cross_species_docking.git
 ```
+Navigate into the repository
+```
+cd cross_species_docking
+```
 
 4. Set up conda environment:
+
+First, install conda-lock
 ```
-conda env create -f cross-species-docking.yml
-conda activate cross-species-docking.yml
+conda install -c conda-forge conda-lock
+```
+
+Next, create the conda environment from the lock file and activate it:
+```
+conda-lock install cross-species-docking.yml
+conda activate cross-species-docking
+```
+
+Whenever you want to use these scripts, just make sure to activate this conda environment first with
+```
+conda activate cross-species-docking
 ```
 
 **NOTE:** It is recommended to create a separate folder/directory to run this analysis within. This folder is where you should store all the protein structures and docking input/output files. 
@@ -69,13 +85,16 @@ conda activate cross-species-docking.yml
 
 ### 1. Get protein structures
 - **Reference protein structure**
+
     The chemical you would like to evaluate for species susceptibility will need to have an empirically solved protein complex. For example, butylparaben was crystallized in complex with ESR1 [PDB: 4MG9](https://www.rcsb.org/structure/4MG9). Download the relevant protein complex for your analysis in PDB format.
 
 - **Ensemble protein set**
+
     You will need a set of empirically derived structures for the protein you are evaluating. For example, if your chemical is bound to ESR1, you will need to download a set of (ideally unmutated) ESR1 structures from the same species. You can obtain these via an "Advanced Search" within the [RCSB PDB](https://www.rcsb.org/).
     **NOTE**: If downloading a batch of structures from the RCSB PDB, the files might be in ".ent" format, in which case the "multiple_prot_align.py" script will automatically convert these into PDBs. All other formats will need to be converted to PDB prior to performing this analysis.
 
 - **Test protein set**
+
     A set of species-specific protein structures will need to be assembled. Any combination of sources could be used (e.g., AlphaFold, RCSB PDB, I-TASSER, etc.), although we recommend using the [Sequence Alignment to Predict Across Species Susceptibility (SeqAPASS) tool](https://seqapass.epa.gov/seqapass/) via Level 4 I-TASSER homology modeling for building susceptibility predictions.
 
     **IMPORTANT**: The PDB file _names_ must be formatted as follows:
@@ -107,11 +126,13 @@ mk_prepare_ligand -i molecule.sdf -o molecule.pdbqt
 Ensure that the ensemble structures and the test structures are stored in separate directories and that the reference structure is added to both.
 
 **Ensemble set**
+
 Run the "multiple_prot_align.py" script.
 
 In addition to generating a new set of modified PDBs, this will create a folder called "details" in the PDB file directory with information on the alignments as well as a CSV file called "residue_positions.csv" that can be useful for converting the new residue positions back to their original positions, if desired.
 
 **Test set**
+
 Run the "prep_test_receptors.py" script.
 
 You will have the option of running a short molecular dynamics simulation (MDS) to equilibrate the structure using [OpenMM](https://openmm.org/).
