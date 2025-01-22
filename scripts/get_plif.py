@@ -12,7 +12,6 @@ import os
 import shutil
 import time
 import xml.etree.ElementTree as ET
-
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -123,53 +122,56 @@ def parse_plip_xml(xml_file):
 
 def merge_dfs(df0, df1):
     """
-    Merges the reference and query data frames and adds columns that state whether
-    or not the residue is unique to the reference or query. This is what is used
-    to calculate the Tanimoto coefficient.
+    Merges the reference and query data frames. Modified to avoid DataFrame.update() warnings.
     """
-    # Rename the dataframes so that their info is distinct
-    df0 = df0.rename(
-        columns={
-            "resnr": "resnr_1",
-            "restype": "restype_1",
-            "interaction_type": "interaction_type_1",
-        }
-    )
-    df1 = df1.rename(
-        columns={
-            "resnr": "resnr_2",
-            "restype": "restype_2",
-            "interaction_type": "interaction_type_2",
-        }
-    )
-    # Merge and add new columns that state T/F depending on if the row value is unique
+    # Create copies to avoid modifying original DataFrames
+    df0_copy = df0.copy()
+    df1_copy = df1.copy()
+    
+    # Rename the dataframes
+    df0_copy = df0_copy.rename(columns={
+        "resnr": "resnr_1",
+        "restype": "restype_1",
+        "interaction_type": "interaction_type_1"
+    })
+    df1_copy = df1_copy.rename(columns={
+        "resnr": "resnr_2",
+        "restype": "restype_2",
+        "interaction_type": "interaction_type_2"
+    })
+    
+    # Merge DataFrames
     merged_df = pd.merge(
-        df0,
-        df1,
+        df0_copy,
+        df1_copy,
         left_on=["resnr_1", "restype_1", "interaction_type_1"],
         right_on=["resnr_2", "restype_2", "interaction_type_2"],
-        how="outer",
+        how="outer"
     )
+    
+    # Create ref and query columns
     merged_df = merged_df.assign(
-        X=merged_df["resnr_1"].notnull(), Y=merged_df["resnr_2"].notnull()
+        ref=merged_df["resnr_1"].notnull(),
+        query=merged_df["resnr_2"].notnull()
     )
-    merged_df["resnr_1"].update(merged_df["resnr_2"])
-    merged_df["restype_1"].update(merged_df["restype_2"])
-    merged_df["interaction_type_1"].update(merged_df["interaction_type_2"])
-    # Drop extra columns and rename remaining columns
-    merged_df = merged_df.drop(columns=["resnr_2", "restype_2", "interaction_type_2"])
-    merged_df = merged_df.rename(
-        columns={
-            "resnr_1": "resnr",
-            "restype_1": "restype",
-            "interaction_type_1": "interaction",
-            "X": "ref",
-            "Y": "query",
-        }
-    )
-    merged_df[["ref", "query"]] = merged_df[["ref", "query"]].astype(int)
-
-    return merged_df
+    
+    # Fill missing values from df2 to df1 columns
+    merged_df["resnr_1"] = merged_df["resnr_1"].fillna(merged_df["resnr_2"])
+    merged_df["restype_1"] = merged_df["restype_1"].fillna(merged_df["restype_2"])
+    merged_df["interaction_type_1"] = merged_df["interaction_type_1"].fillna(merged_df["interaction_type_2"])
+    
+    # Drop extra columns and rename
+    result_df = merged_df.drop(columns=["resnr_2", "restype_2", "interaction_type_2"])
+    result_df = result_df.rename(columns={
+        "resnr_1": "resnr",
+        "restype_1": "restype",
+        "interaction_type_1": "interaction"
+    })
+    
+    # Convert boolean columns to int
+    result_df[["ref", "query"]] = result_df[["ref", "query"]].astype(int)
+    
+    return result_df
 
 
 def similarity_plifs(plif_ref, plif_query):
@@ -183,35 +185,33 @@ def similarity_plifs(plif_ref, plif_query):
 def get_vdw_contacts(pdb_file, ligand_name):
     """
     Calculates the van der Waals contacts between the protein and ligand.
+    Modified to handle empty DataFrame concatenation properly.
     """
-    # Create dictionary of vdw radii for common atoms
     vdw_radii = {"H": 1.2, "C": 1.7, "N": 1.55, "O": 1.52, "S": 1.8}
-    # Create empty lists for storing protein and ligand coordinates
     protein_coordinates = []
     ligand_coordinates = []
-    # Create a temporary df for storing atom coordinates, distances, and vdw info
-    df = pd.DataFrame(
-        columns=[
-            "HETATM",
-            "LIG x",
-            "LIG y",
-            "LIG z",
-            "ATOM",
-            "restype",
-            "resnr",
-            "RES x",
-            "RES y",
-            "RES z",
-            "DIST",
-            "vdw_radii",
-            "vdw_interaction",
-        ]
-    )
-    # Read the atom lines of the pdb file to analyze
+    
+    # Initialize df with proper dtypes to avoid concatenation warnings
+    df = pd.DataFrame({
+        "HETATM": pd.Series(dtype='object'),
+        "LIG x": pd.Series(dtype='float64'),
+        "LIG y": pd.Series(dtype='float64'),
+        "LIG z": pd.Series(dtype='float64'),
+        "ATOM": pd.Series(dtype='object'),
+        "restype": pd.Series(dtype='object'),
+        "resnr": pd.Series(dtype='int64'),
+        "RES x": pd.Series(dtype='float64'),
+        "RES y": pd.Series(dtype='float64'),
+        "RES z": pd.Series(dtype='float64'),
+        "DIST": pd.Series(dtype='float64'),
+        "vdw_radii": pd.Series(dtype='float64'),
+        "vdw_interaction": pd.Series(dtype='bool')
+    })
+    
+    # Rest of the coordinate extraction code remains the same...
     with open(pdb_file) as f:
         lines = f.readlines()
         for line in lines:
-            # Extract atom info
             if line.startswith("ATOM") or line.startswith("HETATM"):
                 atom_name = line[12:16].strip()
                 res_number = int(line[22:26].strip())
@@ -219,57 +219,56 @@ def get_vdw_contacts(pdb_file, ligand_name):
                 x = float(line[30:38].strip())
                 y = float(line[38:46].strip())
                 z = float(line[46:54].strip())
-                # Save the protein and ligand atom info separately
                 if res_name == ligand_name:
                     ligand_coordinates.append((atom_name, x, y, z))
                 else:
-                    protein_coordinates.append(
-                        (atom_name, res_name, res_number, x, y, z)
-                    )
-    # Calculate euclidean distance using euclidean3d function
-    # Set coordinate objects to enumerate so they can be iterated through
-    for i, protein_row in enumerate(protein_coordinates):
+                    protein_coordinates.append((atom_name, res_name, res_number, x, y, z))
+
+    # Create a list to store all rows
+    all_rows = []
+    
+    # Calculate distances and create rows
+    for protein_row in protein_coordinates:
         prot_x, prot_y, prot_z = protein_row[3:6]
-        for j, ligand_row in enumerate(ligand_coordinates):
+        for ligand_row in ligand_coordinates:
             lig_x, lig_y, lig_z = ligand_row[1:4]
             dist = euclidean3d([prot_x, prot_y, prot_z], [lig_x, lig_y, lig_z])
-            # Threshold set to 4.5 angstroms to ensure maximum vdw_radii
-            # are retained with additional atoms
             if dist < 4.5:
-                temp_df = pd.DataFrame(
-                    {
-                        "HETATM": [ligand_row[0]],
-                        "LIG x": [lig_x],
-                        "LIG y": [lig_y],
-                        "LIG z": [lig_z],
-                        "ATOM": [protein_row[0]],
-                        "restype": [protein_row[1]],
-                        "resnr": [protein_row[2]],
-                        "RES x": [prot_x],
-                        "RES y": [prot_y],
-                        "RES z": [prot_z],
-                        "DIST": [dist],
-                    }
-                )
-                df = pd.concat([df, temp_df], ignore_index=True)
-
-    df["vdw_radii"] = df.apply(
-        lambda row: vdw_radii.get(row["HETATM"][0], 0)
-        + vdw_radii.get(row["ATOM"][0], 0)
-        + 0.6,
-        axis=1,
-    )
-    df["vdw_interaction"] = df.apply(
-        lambda row: True if row["DIST"] < row["vdw_radii"] else False, axis=1
-    )
-
-    vdw_df = df[df["vdw_interaction"] == True]
-    vdw_df = vdw_df.groupby(["resnr", "restype"]).first().reset_index()
-    vdw_df = (
-        vdw_df[["resnr", "restype"]]
-        .rename(columns={"resnr": "resnr", "restype": "restype"})
-        .assign(interaction_type="vdw_contact")
-    )
+                all_rows.append({
+                    "HETATM": ligand_row[0],
+                    "LIG x": lig_x,
+                    "LIG y": lig_y,
+                    "LIG z": lig_z,
+                    "ATOM": protein_row[0],
+                    "restype": protein_row[1],
+                    "resnr": protein_row[2],
+                    "RES x": prot_x,
+                    "RES y": prot_y,
+                    "RES z": prot_z,
+                    "DIST": dist
+                })
+    
+    # Create DataFrame from all rows at once
+    if all_rows:
+        df = pd.DataFrame(all_rows)
+        
+        # Calculate vdw_radii and interactions
+        df["vdw_radii"] = df.apply(
+            lambda row: vdw_radii.get(row["HETATM"][0], 0) + 
+                       vdw_radii.get(row["ATOM"][0], 0) + 0.6,
+            axis=1
+        )
+        df["vdw_interaction"] = df["DIST"] < df["vdw_radii"]
+        
+        vdw_df = df[df["vdw_interaction"]].copy()
+        vdw_df = vdw_df.groupby(["resnr", "restype"]).first().reset_index()
+        vdw_df = (
+            vdw_df[["resnr", "restype"]]
+            .assign(interaction_type="vdw_contact")
+        )
+    else:
+        vdw_df = pd.DataFrame(columns=["resnr", "restype", "interaction_type"])
+    
     return vdw_df
 
 
@@ -311,47 +310,22 @@ def sim_matrix(tanimoto_dict):
     # Display the heatmap
     plt.show()
 
-
-def check_exit(input_str):
-    """
-    Checks if the user inputted "exit" and return True if they did.
-    This allows the user to exit the program at any prompt.
-    """
-    if isinstance(input_str, str):
-        input_str = input_str.lower()
-        if input_str == "exit":
-            return True
-        return False
-
-
 def PLIP_PLIFs():
     """
     Main function
     """
-    print(
-        '\nNOTE: All of the PLIP XML reports and protonated PDB '
-        'files must be in the same directory.\nThe PDB files must all end '
-        'with "_protonated.pdb".\nType "exit" at any prompt to exit the program.\n'
-    )
     # Ask the user to enter the working directory
-    cwd = input("Enter the directory containing the PLIP .xml files and protonated PDBs: ")
-    if check_exit(cwd):
-        return
+    cwd = input("Enter the path to the 'plip_results' directory: ")
+
     # Check that the directory exists
     while not os.path.exists(cwd):
-        print(
-            "Error: This directory does not exist. "
-            "Make sure that the directory path is correct.\n"
-        )
-        cwd = input("Enter the directory containing the PLIP .xml files and protonated PDBs: ")
-        if check_exit(cwd):
-            return
+        cwd = input("This directory does not appear to exist.\n" 
+                    "Please enter a valid path to the 'plip_results' directory: ")
+
     # Change the working directory
     os.chdir(cwd)
     # Prompt user for ligand name
     ligand = input("Enter the ligand ID as it is found within the PDB files: ")
-    if check_exit(ligand):
-        return
 
     # Search the directory for a file that starts with "ref_"
     ref_pdb = ""
@@ -368,8 +342,7 @@ def PLIP_PLIFs():
                 break
     if ref == "n":
         ref_pdb = input("Enter the name of the protonated reference PDB file: ")
-        if check_exit(ref_pdb):
-            return
+
         if not ref_pdb.endswith(".pdb"):
             ref_pdb += ".pdb"
         while not os.path.exists(ref_pdb):
@@ -380,8 +353,7 @@ def PLIP_PLIFs():
             ref_pdb = input("Enter the file name of the protonated reference PDB file: ")
             if not ref_pdb.endswith(".pdb"):
                 ref_pdb += ".pdb"
-            if check_exit(ref_pdb):
-                return
+
     # Get the base name of the reference PDB file without the '_protonated' ending
     ref_pdb_name = ref_pdb.split("_protonated.pdb", 1)[0]
 

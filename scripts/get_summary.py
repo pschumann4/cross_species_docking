@@ -15,7 +15,6 @@
 """
 
 import os
-
 import pandas as pd
 
 
@@ -38,7 +37,7 @@ def get_summary():
     )
     # Prompt user for directory containing the AutoDock Vina log files
     vina_logs = input(
-        "Enter the file directory containing the (split) AutoDock Vina log files: "
+        "Enter the path to the 'vina_output' directory: "
     )
     # Prompt user for ligand name
     ligand = input(
@@ -88,61 +87,25 @@ def get_summary():
     # Print the df
     print(summary_df)
 
-    # Ask user if there is a combined PPS-Score file or a directory of PPS-Score files
-    ppsscore_type = input(
-        "Is there a combined PPS-Score file or a directory of PPS-Score files? "
-        "(Enter 'combined' or 'directory'): "
+    # Prompt user for the directory containing the PPS-Score files
+    ppsscore_dir = input(
+        "Enter the path to the 'PPS_files' directory: "
     )
+    # Create a list to hold the PPS-Score values
+    ppsscores = []
 
-    while ppsscore_type not in ["combined", "directory"]:
-        ppsscore_type = input("Please enter 'combined' or 'directory': ")
-
-    # If there is a combined PPS-Score file
-    if ppsscore_type == "combined":
-        # Prompt user for the path to the combined PPS-Score file
-        ppsscore_file = input("Enter the file path for the combined PPS-Score file: ")
-        ppsscore_file = ppsscore_file.replace('"', "")
-        # Create a list to hold the PPS-Score values
-        ppsscores = []
-
-        # Read the PPS-Score file
-        with open(ppsscore_file, "r") as f:
+    # Read the PPS-Score files
+    for file in os.listdir(ppsscore_dir):
+        with open(os.path.join(ppsscore_dir, file), "r") as f:
             lines = f.readlines()
-            line_counter = 2
-            for line in lines[2 : file_count + 2]:
-                pps_line = lines[line_counter]
-                pps_line = pps_line.split()
-                if len(pps_line) != 0:
-                    ppsscores.append(pps_line[2])
-                if line_counter < file_count + 1:
-                    line_counter += 1
+            pps_line = lines[2]
+            pps_line = pps_line.split()
+            ppsscores.append(pps_line[2])
 
-        # Add the PPS-Score values to the dataframe
-        summary_df["ppsscore"] = ppsscores
-        # Print the df
-        print(summary_df)
-
-    # If there is a directory of PPS-Score files
-    elif ppsscore_type == "directory":
-        # Prompt user for the directory containing the PPS-Score files
-        ppsscore_dir = input(
-            "Enter the file directory containing the PPS-Score files: "
-        )
-        # Create a list to hold the PPS-Score values
-        ppsscores = []
-
-        # Read the PPS-Score files
-        for file in os.listdir(ppsscore_dir):
-            with open(os.path.join(ppsscore_dir, file), "r") as f:
-                lines = f.readlines()
-                pps_line = lines[2]
-                pps_line = pps_line.split()
-                ppsscores.append(pps_line[2])
-
-        # Add the PPS-Score values to the dataframe
-        summary_df["ppsscore"] = ppsscores
-        # Print the df
-        print(summary_df)
+    # Add the PPS-Score values to the dataframe
+    summary_df["ppsscore"] = ppsscores
+    # Print the df
+    print(summary_df)
 
     # Prompt user for the ligand RMSD file
     lig_rmsd_file = input("Enter the file path for the ligand RMSD file: ")

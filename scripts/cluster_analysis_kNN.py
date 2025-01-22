@@ -10,7 +10,7 @@
 """
 
 import os
-
+os.environ["OMP_NUM_THREADS"] = '1'
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -27,10 +27,34 @@ from sklearn.neighbors import KNeighborsClassifier
 
 def cluster_analysis():
     """
-    This is the main function that will be called by the user.
-    It will prompt the user for the file directory containing the summary file,
-    the species name and pose number of the self-docking pose, the number of clusters,
-    and if they want to perform a k-nearest neighbors analysis.
+    Perform k-means clustering and k-nearest neighbors analysis on molecular docking data.
+
+    This function performs the following steps:
+    1. Loads and preprocesses docking metrics from a CSV file
+    2. Generates correlation plots to check for multicollinearity
+    3. Determines optimal number of clusters using elbow and silhouette methods
+    4. Performs k-means clustering
+    5. Reduces dimensionality using PCA for visualization
+    6. Optionally performs kNN classification on a test set
+
+    User Inputs:
+        - File path for ensemble-docking summary file
+        - Number of clusters to use
+        - Species/PDB name of self-docking pose
+        - Pose number of self-docking pose
+        - Optional: Test set file path for predictions
+
+    Outputs:
+        - Correlation plot (correlation_plot.png)
+        - Elbow plot (elbow_plot.png)
+        - Silhouette plot (silhouette_plot.png)
+        - Training set clustering plot (training_set_clustering.png)
+        - Clustering summary CSV (kmeans_clustering_summary.csv)
+        - Optional: Test set prediction plots and summaries
+
+    Notes:
+        The input CSV should contain columns for species, pose number,
+        binding affinity, PPS-score, ligand RMSD, and PLIF Tanimoto coefficient.
     """
     # Read the summary csv file
     summary_file = input("Enter the file path for the ensemble-docking summary file: ")
@@ -49,7 +73,7 @@ def cluster_analysis():
     print("Generating correlation plot...")
     print(
         "\nClose the plot window to continue. "
-        'The plot will be saved as "correlation_plot.png".'
+        "The plot will be saved as 'correlation_plot.png'."
     )
     corr = df.iloc[:, 3:].corr()
     sns.set_theme(style="white")
@@ -73,7 +97,7 @@ def cluster_analysis():
     plt.gca().set_yticklabels(labels)
     plt.tight_layout()
     # Save the figure
-    plt.savefig(file_dir + "\correlation_plot.png", dpi=300)
+    plt.savefig(os.path.join(file_dir, "correlation_plot.png"), dpi=300)
     plt.show()
 
     # Specify the k-means parameters
@@ -114,14 +138,11 @@ def cluster_analysis():
     )
     plt.tight_layout()
     # Save the figure
-    plt.savefig(file_dir + "\elbow_plot.png", dpi=300)
+    plt.savefig(os.path.join(file_dir, "elbow_plot.png"), dpi=300)
     plt.show()
     
     # Print the optimal number of clusters
-    print(
-        "\nAccording to the elbow plot, "
-        "the optimal number of clusters is: " + str(kl.elbow)
-    )
+    print(f"\nAccording to the elbow plot, the optimal number of clusters is: {kl.elbow}")
 
     # Generate a silhouette plot to determine the number of clusters
     print("Generating silhouette plot...")
@@ -157,7 +178,7 @@ def cluster_analysis():
     )
     plt.tight_layout()
     # Save the figure
-    plt.savefig(file_dir + os.sep + "silhouette_plot.png", dpi=300)
+    plt.savefig(os.path.join(file_dir, "silhouette_plot.png"), dpi=300)
     plt.show()
 
     # Print the optimal number of clusters
@@ -189,7 +210,7 @@ def cluster_analysis():
         "\nWriting the new dataframe to a csv file."
         '\nThe file will be saved as "kmeans_clustering_summary.csv".'
     )
-    df.to_csv(file_dir + "\kmeans_clustering_summary.csv", index=False)
+    df.to_csv(os.path.join(file_dir, "kmeans_clustering_summary.csv"), index=False)
 
     # Ask the user for the name of the self-docking pose
     self_dock_species = input("Enter the species/PDB name of the self-docking pose (case sensitive): ")
@@ -203,7 +224,7 @@ def cluster_analysis():
     print("\nPlotting the clusters in 2D...")
     # Create a cmap for the clusters
     cmap = ListedColormap(["#D81B60", "#1E88E5", "#FFC107", "#004D40", "#CC79A7", "#56B4E9"])
-    sns.set(font_scale=1.2)
+    sns.set_theme(font_scale=1.2)
     sns.set_style("whitegrid")
     sns.scatterplot(
         x="PCA1", y="PCA2", hue="CLUSTER", data=df, palette=cmap.colors, legend="full", s=75
@@ -227,7 +248,7 @@ def cluster_analysis():
     )
     plt.tight_layout()
     # Save the figure
-    plt.savefig(file_dir + "\\training_set_clustering.png", dpi=300)
+    plt.savefig(os.path.join(file_dir, "training_set_clustering.png"), dpi=300)
     plt.show()
 
     print("\nAll of the plots for this analysis have been saved to {}".format(file_dir))
@@ -241,7 +262,7 @@ def cluster_analysis():
         return
 
     # Ask for the file path to a test set to make predictions on
-    test_set = input("\nEnter the file path to a test set to make predictions on: ")
+    test_set = input("\nEnter the path to the summary CSV file for the test set: ")
     test_set = test_set.replace('"', "")
     file_dir = os.path.dirname(test_set)
     test_df = pd.read_csv(test_set)
@@ -282,7 +303,7 @@ def cluster_analysis():
     plt.xlabel("Value of K")
     plt.ylabel("Cross-Validated Accuracy")
     plt.tight_layout()
-    plt.savefig(file_dir + "\\knn_cross_validation.png", dpi=300)
+    plt.savefig(os.path.join(file_dir, "knn_cross_validation.png"), dpi=300)
     plt.show()
 
     # View the results
@@ -294,7 +315,7 @@ def cluster_analysis():
 
     # Write the cv.results_ to a csv file
     cv_results = pd.DataFrame(grid.cv_results_)
-    cv_results.to_csv(file_dir + "\\knn_validation_results.csv")
+    cv_results.to_csv(os.path.join(file_dir, "knn_validation_results.csv"))
 
     # Instantiate the model with the optimal number of neighbors
     knn = KNeighborsClassifier(n_neighbors=grid.best_params_["n_neighbors"])
@@ -341,10 +362,10 @@ def cluster_analysis():
             "PC3 ({:.2f}%)".format(pca.explained_variance_ratio_[2] * 100),
         ],
         index=comb_df.iloc[:, 3:7].columns,
-    ).to_csv(file_dir + "\pca_loadings.csv")
+    ).to_csv(os.path.join(file_dir, "pca_loadings.csv"))
 
     # Save the dataframe to a csv file
-    comb_df.to_csv(file_dir + "\\predicted_clustering_summary.csv", index=False)
+    comb_df.to_csv(os.path.join(file_dir, "predicted_clustering_summary.csv"), index=False)
 
     # Get a list of all the species names from the train_df
     train_species = train_df["SPECIES"].unique().tolist()
@@ -354,7 +375,7 @@ def cluster_analysis():
     print(
         '\nClose the plot window to continue. The plot will be saved as "combined_cluster_plot.png".'
     )
-    sns.set(font_scale=1.2)
+    sns.set_theme(font_scale=1.2)
     sns.set_style("whitegrid")
     sns.scatterplot(
         x="PCA1", y="PCA2", hue="CLUSTER", data=comb_df, palette=cmap.colors, legend="full", s=35
@@ -374,7 +395,7 @@ def cluster_analysis():
         )
     plt.tight_layout()
     # Save the figure
-    plt.savefig(file_dir + '\\predicted_clustering_2D.png', dpi=300)
+    plt.savefig(os.path.join(file_dir, "predicted_clustering_2D.png"), dpi=300)
     plt.show()
 
     # Generate a 3D scatter plot of the combined data
@@ -418,7 +439,7 @@ def cluster_analysis():
         ax.set_zlabel("PC3 ({:.2f}%)".format(pca.explained_variance_ratio_[2] * 100))
         plt.tight_layout()
         # Save the figure
-        plt.savefig(file_dir + "\\predicted_clustering_3D", dpi=300)
+        plt.savefig(os.path.join(file_dir, "predicted_clustering_3D.png"), dpi=300)
         plt.show()
 
     # Find the cluster for the self-docking pose
@@ -438,11 +459,11 @@ def cluster_analysis():
     # Remove the species in species_ref from species_nsus
     nsus_species = [x for x in nsus_species if x not in sus_species]
     # Print as non susceptible species
-    print("Non-susceptible species:")
+    print("\nNon-susceptible species:")
     for i in nsus_species:
         print(i)
     # Write the susceptible species summary to a text file
-    with open(file_dir + "\susceptibility_summary.txt", "w") as f:
+    with open(os.path.join(file_dir, "susceptibility_summary.txt"), "w") as f:
         f.write("Susceptible species:\n")
         for i in sus_species:
             f.write(i + "\n")
