@@ -54,7 +54,7 @@ cd C:\Users\pschuman\Documents
 ```
 git clone https://github.com/pschumann4/cross_species_docking.git
 ```
-    Navigate into the repository:
+Navigate into the repository:
 ```
 cd cross_species_docking
 ```
