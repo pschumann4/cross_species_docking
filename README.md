@@ -61,14 +61,16 @@ cd cross_species_docking
 
 4. Set up conda environment:
 
-    First, install conda-lock
+First, install conda-lock
 ```
 conda install -c conda-forge conda-lock
 ```
 
-    Next, create the conda environment from the lock file and activate it:
+Next, create the conda environment from the lock file and activate it:
 ```
 conda-lock install --name cross-species-docking conda-lock.yml
+```
+```
 conda activate cross-species-docking
 ```
 
