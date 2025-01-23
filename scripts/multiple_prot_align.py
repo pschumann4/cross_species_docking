@@ -338,151 +338,128 @@ def get_og_pos(og_pdb, new_pdb):
 
 def remove_chains(pdb, keep_chain=None):
     """
-    Removes extraneous chains from a pdb file.
+    Removes extraneous chains from a PDB file.
+    
+    Args:
+        pdb (str): Path to the PDB file
+        keep_chain (str, optional): Specific chain ID to keep. If None, user will be prompted.
+        
+    Returns:
+        str or None: Returns kept chain IDs if same_chain prompt is answered 'y', None otherwise
+        
+    Raises:
+        ValueError: If specified keep_chain is not found in the PDB file
     """
     dir = os.path.dirname(pdb)
     filename = os.path.basename(pdb)
-
-    if keep_chain:
+    
+    def get_available_chains(lines):
+        """Helper function to get all unique chain IDs from PDB file."""
+        chains = set()
+        for line in lines:
+            if (line.startswith("ATOM") or line.startswith("HETATM")) and len(line) >= 22:
+                chains.add(line[21])
+        return sorted(list(chains))
+    
+    def write_filtered_pdb(lines, keep_chains):
+        """Helper function to write filtered PDB file with specified chains."""
         new_pdb = []
+        for line in lines:
+            # Keep non-coordinate records
+            if not any(line.startswith(record) for record in ["ATOM", "HETATM", "TER", "ANISOU"]):
+                if not line.startswith("END"):
+                    new_pdb.append(line)
+                continue
+            
+            # Process coordinate records
+            if len(line) >= 22:
+                chain = line[21]
+                if isinstance(keep_chains, (list, set)) and chain in keep_chains:
+                    new_pdb.append(line)
+                elif isinstance(keep_chains, str) and chain == keep_chains:
+                    new_pdb.append(line)
+        
+        # Ensure END record is present
+        if new_pdb and not new_pdb[-1].startswith("END"):
+            new_pdb.append("END\n")
+            
+        # Write the filtered PDB file
+        with open(os.path.join(dir, filename), "w") as f:
+            f.writelines(new_pdb)
+        print(f"Extraneous chains were removed from {filename}")
+
+    # Read PDB file
+    try:
         with open(pdb, "r") as f:
             lines = f.readlines()
-            for line in lines:
-                # If the line is not an ATOM, HETATM, TER, or ANISOU, add it to
-                # the new pdb file
-                if (
-                    not line.startswith("ATOM")
-                    and not line.startswith("HETATM")
-                    and not line.startswith("TER")
-                    and not line.startswith("ANISOU")
-                    and not line.startswith("END")
-                ):
-                    new_pdb.append(line)
-                if (
-                    line.startswith("ATOM")
-                    or line.startswith("HETATM")
-                    or line.startswith("TER")
-                    or line.startswith("ANISOU")
-                ):
-                    # Check that there is a chain ID
-                    if len(line) >= 22:
-                        # Get the chain ID
-                        chain = line[21]
-                    # If the chain ID is the same as the user input, add the
-                    # line to the new pdb file
-                    if chain == keep_chain:
-                        new_pdb.append(line)
-                if line.startswith("END"):
-                    new_pdb.append(line)
-        # Write the new pdb file to the same directory as the original pdb file
-        with open(os.path.join(dir, filename), "w") as f:
-            for line in new_pdb:
-                f.write(line)
-        print("Extraneous chains were removed from {}".format(filename))
-    else:
-        new_pdb = []
-        with open(pdb, "r") as f:
-            lines = f.readlines()
-            chains = []
-            for line in lines:
-                if line.startswith("ATOM") or line.startswith("HETATM"):
-                    chain = line[21]
-                    # If the chain ID is not in the list, add it
-                    if chain not in chains:
-                        chains.append(chain)
-            # If chains is empty or length == 1, return
-            if not chains or len(chains) == 1:
-                return
-            # Otherwise, ask the user which chain to keep
-            print("Warning: Multiple chains were found in {}:".format(filename))
-            for i, chain in enumerate(chains):
-                print("  {}: {}".format(i, chain))
-            print("It is recommended that you remove extraneous chains.")
-            # The user can input multiple chains to keep as a comma-separated list
-            keep = input(
-                'Which chain(s) would you like to keep? (e.g. "A, B, C, etc." or "all"): '
-            )
-            # If the user says 'all', keep all chains
-            if keep.lower() == "all":
-                print("No modifications will be made to {}".format(filename))
-                return
-            print(keep)
-            # If the user inputted multiple chains, split the string into a list
-            if ", " in keep:
-                keep = keep.split(", ")
-            elif "," in keep:
-                keep = keep.split(",")
-            # Convert the list to uppercase
-            if len(keep) != 1:
-                for i in range(len(keep)):
-                    keep[i] = keep[i].upper()
-            if len(keep) == 1:
-                keep = keep[0].upper()
-            # Check that the user inputted valid chain IDs, if not ask again
-            while True:
-                valid = True
-                for chain in keep:
-                    if chain not in chains:
-                        valid = False
-                if valid:
-                    break
-                else:
-                    print("Invalid chain ID(s) entered.")
-                    keep = input(
-                        'Which chain(s) would you like to keep? (e.g. "A, B, C, etc." or "all"): '
-                    )
-                    if keep.lower() == "all":
-                        print("No modifications will be made to {}".format(filename))
-                        return
-                    if ", " in keep:
-                        keep = keep.split(", ")
-                    elif "," in keep:
-                        keep = keep.split(",")
-                    if len(keep) != 1:
-                        for i in range(len(keep)):
-                            keep[i] = keep[i].upper()
-                    if len(keep) == 1:
-                        keep = keep[0].upper()
-            for line in lines:
-                # If the line is not an ATOM, HETATM, TER, or ANISOU, add it to
-                # the new pdb file
-                if (
-                    not line.startswith("ATOM")
-                    and not line.startswith("HETATM")
-                    and not line.startswith("TER")
-                    and not line.startswith("ANISOU")
-                    and not line.startswith("END")
-                ):
-                    new_pdb.append(line)
-                if (
-                    line.startswith("ATOM")
-                    or line.startswith("HETATM")
-                    or line.startswith("TER")
-                    or line.startswith("ANISOU")
-                ):
-                    # Check that there is a chain ID
-                    if len(line) >= 22:
-                        # Get the chain ID
-                        chain = line[21]
-                    # If the chain ID is the same as the user input, add the
-                    # line to the new pdb file
-                    if chain in keep:
-                        new_pdb.append(line)
-                if line.startswith("END"):
-                    new_pdb.append(line)
-        # Write the new pdb file to the same directory as the original pdb file
-        with open(os.path.join(dir, filename), "w") as f:
-            for line in new_pdb:
-                f.write(line)
-        print("Extraneous chains were removed from {}".format(filename))
-
-        # Ask the user if they would like to use the same chain ID for all structures
-        same_chain = input("Would you like to use the same chain ID for all structures? (y/n): ")
-        while same_chain not in ["y", "n"]:
-            print("Invalid input. Please enter 'y' or 'n'.")
-            same_chain = input("Would you like to use the same chain ID for all structures? (y/n): ")
-        if same_chain.lower() == "y":
-            return keep
+    except FileNotFoundError:
+        raise FileNotFoundError(f"PDB file not found: {pdb}")
+        
+    # Get available chains
+    available_chains = get_available_chains(lines)
+    
+    # If no chains found or only one chain present
+    if not available_chains:
+        print(f"No chains found in {filename}")
+        return
+    elif len(available_chains) == 1:
+        print(f"Only one chain present in {filename}: {available_chains[0]}")
+        return
+        
+    # Handle specified keep_chain
+    if keep_chain is not None:
+        # Handle both string and list input for keep_chain
+        if isinstance(keep_chain, str):
+            keep_chain = keep_chain.upper()
+            if keep_chain not in available_chains:
+                raise ValueError(
+                    f"Specified chain '{keep_chain}' not found in {filename}. "
+                    f"Available chains: {', '.join(available_chains)}"
+                )
+        elif isinstance(keep_chain, (list, tuple)):
+            keep_chain = [c.upper() for c in keep_chain]
+            invalid_chains = [c for c in keep_chain if c not in available_chains]
+            if invalid_chains:
+                raise ValueError(
+                    f"Specified chain(s) {', '.join(invalid_chains)} not found in {filename}. "
+                    f"Available chains: {', '.join(available_chains)}"
+                )
+        else:
+            raise TypeError("keep_chain must be a string, list, or tuple")
+        write_filtered_pdb(lines, keep_chain)
+        return
+        
+    # Interactive chain selection
+    print(f"Multiple chains found in {filename}:")
+    for i, chain in enumerate(available_chains):
+        print(f"  {i}: {chain}")
+    print("It is recommended that you remove extraneous chains.")
+    
+    while True:
+        keep = input('Which chain(s) would you like to keep? (e.g. "A, B, C" or "all"): ').strip()
+        
+        if keep.lower() == "all":
+            print(f"No modifications will be made to {filename}")
+            return
+            
+        # Parse input into list of chains
+        keep_chains = [c.strip().upper() for c in keep.replace(" ", "").split(",")]
+        
+        # Validate chains
+        if all(chain in available_chains for chain in keep_chains):
+            break
+        print("Invalid chain ID(s). Please try again.")
+    
+    write_filtered_pdb(lines, keep_chains)
+    
+    # Ask about using same chain ID for all structures
+    while True:
+        same_chain = input("Would you like to use the same chain ID for all structures? (y/n): ").lower()
+        if same_chain in ["y", "n"]:
+            break
+        print("Invalid input. Please enter 'y' or 'n'.")
+    
+    return keep_chains if same_chain == "y" else None
 
 def remove_duplicates(pdb):
     """
