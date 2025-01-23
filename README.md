@@ -18,10 +18,10 @@ python "path/to/script_file.py"
 This code was developed using Windows 11. It is unknown to the authors whether these scripts will work as intended on other operating systems.
 
 ### 1. Python 3
-The user will need to have [Python 3](https://www.python.org/downloads/) installed on their computer.
+You will need to have [Python 3](https://www.python.org/downloads/) installed.
 
 ### 2. Anaconda or Miniconda
-[Miniconda](https://docs.anaconda.com/miniconda/install/) is the suggested Anaconda Distribution, but users can use Anaconda as well. All the scripts in this repository will need to be run in your conda environment.
+[Miniconda](https://docs.anaconda.com/miniconda/install/) is the suggested Anaconda Distribution, but users can use Anaconda as well. All the scripts in this repository will need to be run in the conda environment.
 
 ### 3. PPS-align
 
@@ -34,7 +34,7 @@ Once installed, "PPSalign" will then need to be set as an environment variable i
 ### 4. AutoDock Vina
 The latest release of AutoDock Vina can be downloaded from [here](https://github.com/ccsb-scripps/AutoDock-Vina/releases).
 
-The "vina_1.2.#_win.exe" and "vina_split_1.2.#_win.exe" will need to be updated to "vina.exe" and "vina_split.exe.", respectively. The directory housing these execuetables will then need to be added to your PATH.
+The "vina_1.2.#_win.exe" and "vina_split_1.2.#_win.exe" will need to be updated to "vina.exe" and "vina_split.exe", respectively. The directory housing these execuetables will then need to be added to your PATH.
 
 ### 5. MUSCLE
 The [MUSCLE](https://drive5.com/muscle5/) (MUltiple Sequence Comparison by Log- Expectation) execuetable program will need to be downloaded and added to PATH renamed as "muscle.exe." The program can be downloaded [here](https://github.com/rcedgar/muscle/releases/tag/5.1.0).
@@ -54,7 +54,7 @@ cd C:\Users\pschuman\Documents
 ```
 git clone https://github.com/pschumann4/cross_species_docking.git
 ```
-Navigate into the repository
+Navigate into the repository:
 ```
 cd cross_species_docking
 ```
@@ -68,11 +68,13 @@ conda install -c conda-forge conda-lock
 
 Next, create the conda environment from the lock file and activate it:
 ```
-conda-lock install cross-species-docking.yml
+conda-lock install --name cross-species-docking conda-lock.yml
+```
+```
 conda activate cross-species-docking
 ```
 
-Whenever you want to use these scripts, just make sure to activate this conda environment first with
+Whenever you want to use these scripts, just make sure to activate this conda environment first with:
 ```
 conda activate cross-species-docking
 ```
