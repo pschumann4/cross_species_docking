@@ -42,15 +42,25 @@ The [MUSCLE](https://drive5.com/muscle5/) (MUltiple Sequence Comparison by Log- 
 ### 6. PyMOL (open-source)
 Instructions for installing open-source PyMOL for Windows can be found [here](https://pymolwiki.org/index.php/Windows_Install#Open-Source_PyMOL).
 
-## Getting Started
-1. Open an Anaconda Prompt (on Windows, go to your search bar and type "Anaconda" and if installed properly, you should see an option to open an Anaconda Prompt).
+### 7. Meeko
+Due to conflicts of package dependencies with Meeko and Python v3.12, we suggest that Meeko is installed from source. 
+Using command prompt, this can be installed with the following:
+```
+git clone https://github.com/forlilab/Meeko.git
+cd Meeko
+git checkout develop
+pip install .
+```
 
-2. Navigate to a directory where you would like to have the repository cloned. For example:
+## Getting Started
+**1.** Open an Anaconda Prompt (on Windows, go to your search bar and type "Anaconda" and if installed properly, you should see an option to open an Anaconda Prompt).
+
+**2.** Navigate to a directory where you would like to have the repository cloned. For example:
 ```
 cd C:\Users\pschuman\Documents
 ```
 
-3. Clone the repository:
+**3.** Clone the repository:
 ```
 git clone https://github.com/pschumann4/cross_species_docking.git
 ```
@@ -59,7 +69,7 @@ Navigate into the repository:
 cd cross_species_docking
 ```
 
-4. Set up conda environment:
+**4.** Set up conda environment:
 
 First, install conda-lock
 ```

@@ -13,7 +13,7 @@
 version: 1
 metadata:
   content_hash:
-    win-64: eb0f141110332bf27fb258d1ef7e1086475e97b3d6e6d4542b2f2f739ebb0d20
+    win-64: 476169e43eebf8d562649553ecd4699bc71c4a9e5bb2b401456cc5aad9c46c75
   channels:
   - url: conda-forge
     used_env_vars: []
@@ -1724,21 +1724,6 @@ package:
   hash:
     md5: 8d205f5374e0bcb6d58f3da3f81022b9
     sha256: 70475d3777a88126a25ae6981198236e3082a2e5b12fb14c0b599cc6463e11ec
-  category: main
-  optional: false
-- name: meeko
-  version: 0.5.0
-  manager: conda
-  platform: win-64
-  dependencies:
-    numpy: ''
-    python: '>=3.8'
-    rdkit: ''
-    scipy: ''
-  url: https://conda.anaconda.org/conda-forge/noarch/meeko-0.5.0-pyhd8ed1ab_0.conda
-  hash:
-    md5: 8cea7dbada8a85aceb315e30388c9104
-    sha256: bfc47353273fb327435e2a56b6b149df8529acb38467b67d096c0f528a7780a3
   category: main
   optional: false
 - name: mkl
