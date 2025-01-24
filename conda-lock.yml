@@ -13,7 +13,7 @@
 version: 1
 metadata:
   content_hash:
-    win-64: 54bbb8e980981753f132daa1f4160e740529d99b1b351aee3fcf395318f9f0e3
+    win-64: eb0f141110332bf27fb258d1ef7e1086475e97b3d6e6d4542b2f2f739ebb0d20
   channels:
   - url: conda-forge
     used_env_vars: []
@@ -2514,6 +2514,24 @@ package:
   hash:
     md5: 5758e70a80936d7527f70196685c6695
     sha256: d5583406ea6d17391294da0a6dadf9a22aad732d1f658f2d6d12fc50b968c0fa
+  category: main
+  optional: false
+- name: ruptures
+  version: 1.1.9
+  manager: conda
+  platform: win-64
+  dependencies:
+    numpy: '>=1.19,<3'
+    python: '>=3.12,<3.13.0a0'
+    python_abi: 3.12.*
+    scipy: ''
+    ucrt: '>=10.0.20348.0'
+    vc: '>=14.2,<15'
+    vc14_runtime: '>=14.29.30139'
+  url: https://conda.anaconda.org/conda-forge/win-64/ruptures-1.1.9-py312h1a27103_2.conda
+  hash:
+    md5: e46013532274925ca62446b5d32c40f6
+    sha256: 0022ef3bfac036dd0b5d36533ae5ba8ef00585dff58d3b764d0fcbd652d757ed
   category: main
   optional: false
 - name: scikit-learn
