@@ -54,9 +54,10 @@ def get_flexible_residues(residues_file):
     return flex_residues
 
 def main():
-    pdb_dir = input("Enter the path to the directory containing the PDB files: ")
+    pdb_dir = input("Enter the path to the directory containing the aligned PDB files: ")
     while not os.path.exists(pdb_dir):
-        pdb_dir = input("That path does not appear to exist.\nPlease enter the path to the directory containing the PDB files: ")
+        print("That path does not appear to exist.")
+        pdb_dir = input("\nPlease enter the path to the directory containing the aligned PDB files: ")
     
     os.chdir(pdb_dir)
     pdb_files = [f for f in os.listdir(pdb_dir) if f.endswith(".pdb")]
