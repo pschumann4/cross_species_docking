@@ -134,7 +134,7 @@ You will need to obtain 3D chemical structures from sources like [PubChem](https
 mk_prepare_ligand -i molecule.sdf -o molecule.pdbqt
 ``` 
 
-### 2. Prepare the protein structures
+### 3. Prepare the protein structures
 Ensure that the ensemble structures and the test structures are stored in separate directories and that the reference structure is added to both.
 
 **Ensemble set**
@@ -152,7 +152,7 @@ This will add significant computational time if you choose to do so. The script 
 
 Next, run the "multiple_prot_align.py" script on the prepared structures.
 
-### 3. Determine the grid box area for the docking simulation
+### 4. Determine the grid box area for the docking simulation
 
 **NOTE:** Steps 4 - 8 apply to both the ensemble set and test set analyses.
 
@@ -161,15 +161,15 @@ For example, if your reference structure was 4MG9, the aligned reference should 
 
 When asked "Output the gridbox coordinates?" choose "y". This will create a .txt file in the folder called "details" that contains the gridbox information needed for docking.
 
-### 4. Determine flexible residues
+### 5. Determine flexible residues
 Run the "get_flex_residues.py" script using the folder containing the modified (i.e., aligned) structures as the input when prompted.
 
 A .txt file listing the flexible residues for each structure will be saved to the "details" folder.
 
-### 5. Prep structures for docking
+### 6. Prep structures for docking
 Run the "prep_pdbqt.py" script to parameterize each receptor file and generate rigid and flexible PDBQT files.
 
-### 6. Create AutoDock Vina configuration files
+### 7. Create AutoDock Vina configuration files
 Run the "get_config_files.py" script using the "pdbqt_files" folder as an input when prompted.
 
 You will also need to provide the file path information for the gridbox and flexible residues text files, which can be added by dragging and dropping the file into the terminal window at the appropriate prompt.
@@ -184,26 +184,26 @@ Exhaustiveness = 16
 
 This will generate a configuration file for each receptor.
 
-### 7. Perform the docking simulation
+### 8. Perform the docking simulation
 Add the chemical PDBQT file to the "pdbqt_files" folder.
 
 Then, run the "run_vina_batch.py" script.
 
 The results will be added to a new folder called "vina_output".
 
-### 8. Generate binding models from Vina outputs
+### 9. Generate binding models from Vina outputs
 Copy and paste the aligned receptor PDB files (ending with "_modified.pdb") into the "vina_output" folder including the aligned reference structure.
 
 Then, run the "generate_models.py" script.
 
 This will combine all corresponding flexible residues, rigid residues, and ligand poses into a PDB file. These PDB models will be saved to a new folder called "models".
 
-### 9. Calculate ligand RMSD
+### 10. Calculate ligand RMSD
 Run the "ligand_rmsd.py" script using the "models" directory path as an input when prompted.
 
 You will also be asked, "Would you like to filter the best/worst models based on RMSD? (y/n)". If you are performing the ensemble set analysis, then we suggest that you say "y". Sorting the results in this way simplifies the categorization step when generating susceptibility predictions, which are binary -- either "yes" or "no". When sorting the models in this way, you will also be asked to sort the "vina_output", which you should also input "y". Doing this will also reduce computational time on the next steps of the analysis.
 
-### 10. Calculate binding pocket similarity scores
+### 11. Calculate binding pocket similarity scores
 Run the "get_pocket.py" script, again, but this time specifying that you want to run it over a "directory" when prompted. Use the path to the "models" folder as the input (or "filtered_models" if performing the ensemble set analysis).
 
 This will generate a new folder called "binding_sites".
@@ -214,7 +214,7 @@ This will output a folder called "PPS_files" that contains all the PPS Score inf
 
 **NOTE:** With all the folders within folders being generated, it is highly recommended that you organize these output folders into a single location on your computer like the parent directory that you originally created for your receptor files.
 
-### 11. Perform the protein-ligand interaction fingerprint (PLIF) analysis
+### 12. Perform the protein-ligand interaction fingerprint (PLIF) analysis
 Run the "run_plip.py" script using the "models" or "filtered_models" (for the ensemble set) directory path.
 
 If PLIP was not installed properly, try running ```conda install -c conda-forge plip```. If issues persist, this analysis can also be performed using the [PLIP web-based tool](https://plip-tool.biotec.tu-dresden.de/plip-web/plip/index). Save the .xml output and the protonated versions of the inputted PDB. **NOTE:** If done this way, ensure that the protonated PDBs are fully protonated, including the ligand atoms before moving to the next step.
@@ -223,10 +223,10 @@ The protonated PDB and the .xml file for each query structure and the reference 
 
 Once the PLIP .xml files and protonated PDBs are generated for each model, run the "get_plif.py" script using the "plip_results" folder as the input when prompted.
 
-### 12. Generate a summary report file
+### 13. Generate a summary report file
 Run the "get_summary.py" script. The user will be prompted for all relevant information to generate the summary report file.
 
-### 13. Perform cluster analysis
+### 14. Perform cluster analysis
 Once you have a summary report for the ensemble set analysis and the test set analysis, run the "cluster_analysis_kNN.py" script.
 
 **NOTE:** A self-docking simulation should have been performed automatically using your reference structure. You will need to determine which self-docking result is the "best" before running this script. Typically, this is the model with the lowest calculated ligand RMSD.
