@@ -163,8 +163,9 @@ def run_mds(processed_filename, output_dir, mds_time=10):
     plt.title(f'RMSD for {os.path.basename(pdb_name).replace(".pdb", "")}')
     plt.legend()
     # Make a new folder called 'rmsd_plots' to save the plots
-    os.makedirs('rmsd_plots', exist_ok=True)
-    rmsd_plot_name = os.path.join(output_dir, 'rmsd_plots', f'{os.path.basename(pdb_name).replace(".pdb", "")}_mds.png')
+    rmsd_plot_dir = os.path.join(output_dir, 'rmsd_plots')
+    os.makedirs(rmsd_plot_dir, exist_ok=True)
+    rmsd_plot_name = os.path.join(rmsd_plot_dir, f'{os.path.basename(pdb_name).replace(".pdb", "")}_mds.png')
     plt.savefig(rmsd_plot_name)
     plt.close()
 
