@@ -49,7 +49,7 @@ def run_pdbfixer(pdb_name, output_dir):
 
     return fixed_filename
 
-def run_mds(processed_filename, output_dir, mds_time=10):
+def run_mds(processed_filename, output_dir, mds_time=None):
     """
     Run Molecular Dynamics Simulation on a PDB file
 
@@ -60,7 +60,7 @@ def run_mds(processed_filename, output_dir, mds_time=10):
     output_dir : str
         Directory to save output files
     mds_time : int, optional
-        Total simulation time in ns (default: 10)
+        Total simulation time in ps
 
     Returns:
     --------
@@ -73,32 +73,46 @@ def run_mds(processed_filename, output_dir, mds_time=10):
     pdb_name = os.path.basename(processed_filename).replace("_fixed.pdb", ".pdb")
 
     # Perform Molecular Dynamics Simulation
-    print("\nPerforming " + str(mds_time) + " ns MD simulation for equilibration...")
+    print("\nPerforming " + str(mds_time) + " ps MD simulation for equilibration...")
     mds_output_name = os.path.join(output_dir, os.path.basename(pdb_name).replace(".pdb", "-mds.pdb"))
     pdb = PDBFile(processed_filename)
-    forcefield = ForceField('amber14-all.xml', 'amber14/tip3pfb.xml')
+    forcefield = ForceField('amber14-all.xml', 'implicit/gbn2.xml') 
     modeller = Modeller(pdb.topology, pdb.positions)
-    modeller.addSolvent(forcefield, padding=1.0*nanometer)
-    
-    system = forcefield.createSystem(modeller.topology, 
-                                     nonbondedMethod=PME,
-                                     nonbondedCutoff=1*nanometer, 
-                                     constraints=HBonds)
+
+    system = forcefield.createSystem(modeller.topology,
+                                    nonbondedMethod=CutoffNonPeriodic,
+                                    nonbondedCutoff=2*nanometer,
+                                    constraints=HBonds,
+                                    hydrogenMass=1.5*amu)
     integrator = LangevinMiddleIntegrator(300*kelvin, 1/picosecond, 0.004*picoseconds)
     simulation = Simulation(modeller.topology, system, integrator)
     simulation.context.setPositions(modeller.positions)
+
+    # Energy minimization
+    print("Performing energy minimization...")
     simulation.minimizeEnergy()
-    simulation.reporters.append(PDBReporter(mds_output_name, 1000))
-    simulation.reporters.append(StateDataReporter(stdout, 1000, step=True,
-            potentialEnergy=True, temperature=True, volume=True))
-    simulation.step(int(mds_time)*1000)
+
+    # Calculate steps and reporting interval
+    steps_per_ps = 250  # for 4 fs timestep
+    report_interval = 2500  # Save every 10 ps
+    total_steps = int(mds_time * steps_per_ps)
+
+    # Setup reporters
+    simulation.reporters.append(PDBReporter(mds_output_name, report_interval))
+    simulation.reporters.append(StateDataReporter(stdout, report_interval, step=True,
+            potentialEnergy=True, temperature=True))
+
+    # Production run
+    print(f"\nStarting production run ({mds_time} ps)...")
+    print("Total steps:", total_steps)
+    simulation.step(total_steps)
 
     # Remove the processed PDB file
     os.remove(processed_filename)
 
     # Determine approximate equilibration point
     print("\nDetermining approximate equilibration point based on RMSD...\n")
-    u = mda.Universe(mds_output_name, dt = 1000.0)
+    u = mda.Universe(mds_output_name, dt=10.0)
     reference = u.select_atoms("protein")
     R = RMSD(u, reference, select="protein")
     R.run()
@@ -172,7 +186,7 @@ def run_mds(processed_filename, output_dir, mds_time=10):
     plateau_index = plateau_index + 1
 
     print(f"Equilibration analysis for {os.path.basename(pdb_name)}:")
-    print(f"  Time: {plateau_time:.2f} ps = Model {plateau_index}")
+    print(f"  Time: {plateau_results['mean_representative_time']:.2f} ps = Model {plateau_index}")
     print(f"  Plateau average: {plateau_results['plateau_average']:.2f} Å")
     print(f"  Plateau std dev: {plateau_results['plateau_std']:.2f} Å")
     
@@ -265,9 +279,9 @@ def prep_receptors():
     
     # If the user wants to perform Molecular Dynamics Simulation
     save_trajectories = input(f"Do you want to save the MDS trajectory files? (y/n): ").lower().strip() == 'y'
-    mds_time = input("Enter the total simulation time in ns (10-100 ns): ")
-    while not mds_time.isdigit() or int(mds_time) <= 0 or int(mds_time) > 100:
-        mds_time = input("Please enter a valid time (10-100 ns): ")
+    mds_time = input("Enter the total simulation time in ps (suggest 100-500 ps): ")
+    while not mds_time.isdigit() or int(mds_time) < 100 or int(mds_time) > 1000:
+        mds_time = input("Please enter a valid time (100-1000 ps): ")
     mds_time = int(mds_time)
 
     results = []
