@@ -170,7 +170,7 @@ A .txt file listing the flexible residues for each structure will be saved to th
 Run the "prep_pdbqt.py" script to parameterize each receptor file and generate rigid and flexible PDBQT files.
 
 ### 7. Create AutoDock Vina configuration files
-Run the "get_config_files.py" script using the "pdbqt_files" folder as an input when prompted.
+Run the "generate_config_files.py" script using the "pdbqt_files" folder as an input when prompted.
 
 You will also need to provide the file path information for the gridbox and flexible residues text files, which can be added by dragging and dropping the file into the terminal window at the appropriate prompt.
 
