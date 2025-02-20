@@ -69,143 +69,178 @@ def run_mds(processed_filename, output_dir, mds_time=None):
     float: Time of equilibration
     str: Path to the equilibrated PDB file
     """
-    # Get the pdb_name
-    pdb_name = os.path.basename(processed_filename).replace("_fixed.pdb", ".pdb")
-
-    # Perform Molecular Dynamics Simulation
-    print("\nPerforming " + str(mds_time) + " ps MD simulation for equilibration...")
-    mds_output_name = os.path.join(output_dir, os.path.basename(pdb_name).replace(".pdb", "-mds.pdb"))
-    pdb = PDBFile(processed_filename)
-    forcefield = ForceField('amber14-all.xml', 'implicit/gbn2.xml') 
-    modeller = Modeller(pdb.topology, pdb.positions)
-
-    system = forcefield.createSystem(modeller.topology,
+    try:
+        # Get the pdb_name
+        pdb_name = os.path.basename(processed_filename).replace("_fixed.pdb", ".pdb")
+        mds_output_name = os.path.join(output_dir, os.path.basename(pdb_name).replace(".pdb", "-mds.pdb"))
+        
+        # Perform Molecular Dynamics Simulation
+        print("\nPerforming " + str(mds_time) + " ps MD simulation for equilibration...")
+        
+        # Load PDB file (no context manager needed)
+        pdb = PDBFile(processed_filename)
+        forcefield = ForceField('amber14-all.xml', 'implicit/gbn2.xml') 
+        modeller = Modeller(pdb.topology, pdb.positions)
+            
+        system = forcefield.createSystem(modeller.topology,
                                     nonbondedMethod=CutoffNonPeriodic,
                                     nonbondedCutoff=2*nanometer,
                                     constraints=HBonds,
                                     hydrogenMass=1.5*amu)
-    integrator = LangevinMiddleIntegrator(300*kelvin, 1/picosecond, 0.004*picoseconds)
-    simulation = Simulation(modeller.topology, system, integrator)
-    simulation.context.setPositions(modeller.positions)
+        integrator = LangevinMiddleIntegrator(300*kelvin, 1/picosecond, 0.004*picoseconds)
+        simulation = Simulation(modeller.topology, system, integrator)
+        simulation.context.setPositions(modeller.positions)
 
-    # Energy minimization
-    print("Performing energy minimization...")
-    simulation.minimizeEnergy()
+        # Energy minimization
+        print("Performing energy minimization...")
+        simulation.minimizeEnergy()
 
-    # Calculate steps and reporting interval
-    steps_per_ps = 250  # for 4 fs timestep
-    report_interval = 2500  # Save every 10 ps
-    total_steps = int(mds_time * steps_per_ps)
+        # Calculate steps and reporting interval
+        steps_per_ps = 250  # for 4 fs timestep
+        report_interval = 2500  # Save every 10 ps
+        total_steps = int(mds_time * steps_per_ps)
 
-    # Setup reporters
-    simulation.reporters.append(PDBReporter(mds_output_name, report_interval))
-    simulation.reporters.append(StateDataReporter(stdout, report_interval, step=True,
-            potentialEnergy=True, temperature=True))
+        # Setup reporters
+        simulation.reporters.append(PDBReporter(mds_output_name, report_interval))
+        simulation.reporters.append(StateDataReporter(stdout, report_interval, step=True,
+                potentialEnergy=True, temperature=True))
 
-    # Production run
-    print(f"\nStarting production run ({mds_time} ps)...")
-    print("Total steps:", total_steps)
-    simulation.step(total_steps)
+        # Production run
+        print(f"\nStarting production run ({mds_time} ps)...")
+        print("Total steps:", total_steps)
+        simulation.step(total_steps)
 
-    # Remove the processed PDB file
-    os.remove(processed_filename)
-
-    # Determine approximate equilibration point
-    print("\nDetermining approximate equilibration point based on RMSD...\n")
-    u = mda.Universe(mds_output_name, dt=10.0)
-    reference = u.select_atoms("protein")
-    R = RMSD(u, reference, select="protein")
-    R.run()
-    
-    time = (R.results.rmsd[:, 1])
-    rmsd_values = R.results.rmsd[:, 2]
-
-    # Close the Universe after RMSD analysis
-    u.trajectory.close()
-    del u
-    
-    def estimate_plateau_point(rmsd_values, time):
-        # Plateau detection using PELT algorithm
-        algo = rpt.Pelt(model="rbf").fit(rmsd_values)
-        result = algo.predict(pen=1)
-        plateau_start_index = result[0]
+        # Clean up simulation and pdb explicitly
+        del simulation
+        del pdb
         
-        # Calculate plateau statistics
-        plateau_values = rmsd_values[plateau_start_index:]
-        plateau_average = np.mean(plateau_values)
-        plateau_std = np.std(plateau_values)
+        # Remove the processed PDB file after simulation is complete
+        if os.path.exists(processed_filename):
+            os.remove(processed_filename)
+
+        # RMSD Analysis in a separate try-except block with proper cleanup
+        print("\nDetermining approximate equilibration point based on RMSD...\n")
+        rmsd_results = None
+        try:
+            u = mda.Universe(mds_output_name, dt=10.0)
+            reference = u.select_atoms("protein")
+            R = RMSD(u, reference, select="protein")
+            R.run()
+            
+            rmsd_results = {
+                'time': R.results.rmsd[:, 1].copy(),  # Make copies of the data
+                'rmsd': R.results.rmsd[:, 2].copy()
+            }
+        finally:
+            # Ensure Universe is properly closed
+            if 'u' in locals():
+                u.trajectory.close()
+                del u
+                del R
+                del reference
+
+        if rmsd_results is None:
+            raise RuntimeError("RMSD analysis failed")
+
+        # Continue with plateau analysis using the copied data
+        time = rmsd_results['time']
+        rmsd_values = rmsd_results['rmsd']
+
+        def estimate_plateau_point(rmsd_values, time):
+            # Plateau detection using PELT algorithm
+            algo = rpt.Pelt(model="rbf").fit(rmsd_values)
+            result = algo.predict(pen=1)
+            plateau_start_index = result[0]
+            
+            # Calculate plateau statistics
+            plateau_values = rmsd_values[plateau_start_index:]
+            plateau_average = np.mean(plateau_values)
+            plateau_std = np.std(plateau_values)
+            
+            # Find the RMSD value closest to the mean
+            differences = np.abs(plateau_values - plateau_average)
+            closest_to_mean_local_idx = np.argmin(differences)
+            closest_to_mean_index = plateau_start_index + closest_to_mean_local_idx
         
-        # Find the RMSD value closest to the mean
-        differences = np.abs(plateau_values - plateau_average)
-        closest_to_mean_local_idx = np.argmin(differences)
-        closest_to_mean_index = plateau_start_index + closest_to_mean_local_idx
-    
-        return {
-            'start_index': plateau_start_index,
-            'start_time': time[plateau_start_index],
-            'plateau_average': plateau_average,
-            'plateau_std': plateau_std,
-            'mean_representative_index': closest_to_mean_index,
-            'mean_representative_time': time[closest_to_mean_index]
-        }
+            return {
+                'start_index': plateau_start_index,
+                'start_time': time[plateau_start_index],
+                'plateau_average': plateau_average,
+                'plateau_std': plateau_std,
+                'mean_representative_index': closest_to_mean_index,
+                'mean_representative_time': time[closest_to_mean_index]
+            }
 
-    # Estimate plateau point
-    plateau_results = estimate_plateau_point(rmsd_values, time)
-    plateau_index = plateau_results['mean_representative_index']
-    plateau_time = plateau_results['start_time']
+        # Estimate plateau point
+        plateau_results = estimate_plateau_point(rmsd_values, time)
+        plateau_index = plateau_results['mean_representative_index']
+        plateau_time = plateau_results['start_time']
 
-    # Plot RMSD with enhanced visualization
-    plt.figure(figsize=(10,6))
-    plt.plot(time, rmsd_values, marker='o', label='RMSD')
+        # Plot RMSD with enhanced visualization
+        plt.figure(figsize=(10,6))
+        plt.plot(time, rmsd_values, marker='o', label='RMSD')
 
-    # Add plateau line and indicators
-    plt.axvline(x=plateau_time, color='r', linestyle='--', label='Equilibration Start')
-    plt.axvline(x=plateau_results['mean_representative_time'], color='b', linestyle='--', label='Equilibration Point')
-    plt.axhline(y=plateau_results['plateau_average'], 
-            color='g', linestyle='--', 
-            label=f'Plateau Average: {plateau_results["plateau_average"]:.2f} Å')
+        # Add plateau line and indicators
+        plt.axvline(x=plateau_time, color='r', linestyle='--', label='Equilibration Start')
+        plt.axvline(x=plateau_results['mean_representative_time'], color='b', 
+                   linestyle='--', label='Equilibration Point')
+        plt.axhline(y=plateau_results['plateau_average'], 
+                color='g', linestyle='--', 
+                label=f'Plateau Average: {plateau_results["plateau_average"]:.2f} Å')
 
-    # Add plateau region shading
-    plt.fill_between(time[plateau_results['start_index']:],
-                    plateau_results['plateau_average'] - plateau_results['plateau_std'],
-                    plateau_results['plateau_average'] + plateau_results['plateau_std'],
-                    color='g', alpha=0.2,
-                    label=f'Std Dev: ±{plateau_results["plateau_std"]:.2f} Å')
+        # Add plateau region shading
+        plt.fill_between(time[plateau_results['start_index']:],
+                        plateau_results['plateau_average'] - plateau_results['plateau_std'],
+                        plateau_results['plateau_average'] + plateau_results['plateau_std'],
+                        color='g', alpha=0.2,
+                        label=f'Std Dev: ±{plateau_results["plateau_std"]:.2f} Å')
 
-    plt.xlabel("Time (ps)")
-    plt.ylabel(r'RMSD ($\AA$)')
-    plt.title(f'RMSD for {os.path.basename(pdb_name).replace(".pdb", "")}')
-    plt.legend()
-    # Make a new folder called 'rmsd_plots' to save the plots
-    rmsd_plot_dir = os.path.join(output_dir, 'rmsd_plots')
-    os.makedirs(rmsd_plot_dir, exist_ok=True)
-    rmsd_plot_name = os.path.join(rmsd_plot_dir, f'{os.path.basename(pdb_name).replace(".pdb", "")}_mds.png')
-    plt.savefig(rmsd_plot_name)
-    plt.close()
+        plt.xlabel("Time (ps)")
+        plt.ylabel(r'RMSD ($\AA$)')
+        plt.title(f'RMSD for {os.path.basename(pdb_name).replace(".pdb", "")}')
+        plt.legend()
+        
+        # Make a new folder called 'rmsd_plots' to save the plots
+        rmsd_plot_dir = os.path.join(output_dir, 'rmsd_plots')
+        os.makedirs(rmsd_plot_dir, exist_ok=True)
+        rmsd_plot_name = os.path.join(rmsd_plot_dir, 
+                                     f'{os.path.basename(pdb_name).replace(".pdb", "")}_mds.png')
+        plt.savefig(rmsd_plot_name)
+        plt.close()
 
-    plateau_index = plateau_index + 1
+        plateau_index = plateau_index + 1
 
-    print(f"Equilibration analysis for {os.path.basename(pdb_name)}:")
-    print(f"  Time: {plateau_results['mean_representative_time']:.2f} ps = Model {plateau_index}")
-    print(f"  Plateau average: {plateau_results['plateau_average']:.2f} Å")
-    print(f"  Plateau std dev: {plateau_results['plateau_std']:.2f} Å")
-    
-    # Extract equilibration model PDB
-    equilibration_pdb_name = os.path.join(output_dir, os.path.basename(pdb_name))
-    
-    # Using MDAnalysis to write the specific model
-    u_eq = mda.Universe(mds_output_name or processed_filename)
-    u_eq.trajectory[plateau_index]
-    protein = u_eq.select_atoms("protein")
-    
-    with mda.Writer(equilibration_pdb_name, protein.n_atoms) as W:
-        W.write(protein)
-    
-    # Close the second Universe
-    u_eq.trajectory.close()
-    del u_eq
+        print(f"Equilibration analysis for {os.path.basename(pdb_name)}:")
+        print(f"  Time: {plateau_results['mean_representative_time']:.2f} ps = Model {plateau_index}")
+        print(f"  Plateau average: {plateau_results['plateau_average']:.2f} Å")
+        print(f"  Plateau std dev: {plateau_results['plateau_std']:.2f} Å")
+        
+        # Extract equilibration model PDB with proper cleanup
+        equilibration_pdb_name = os.path.join(output_dir, os.path.basename(pdb_name))
+        try:
+            u_eq = mda.Universe(mds_output_name)
+            u_eq.trajectory[plateau_index]
+            protein = u_eq.select_atoms("protein")
+            
+            with mda.Writer(equilibration_pdb_name, protein.n_atoms) as W:
+                W.write(protein)
+        finally:
+            if 'u_eq' in locals():
+                u_eq.trajectory.close()
+                del u_eq
+                del protein
 
-    return processed_filename, mds_output_name, plateau_time, equilibration_pdb_name
+        return processed_filename, mds_output_name, plateau_time, equilibration_pdb_name
+
+    except Exception as e:
+        # If any error occurs, ensure files are cleaned up
+        print(f"Error during MDS: {str(e)}")
+        if 'processed_filename' in locals() and os.path.exists(processed_filename):
+            try:
+                os.remove(processed_filename)
+            except:
+                pass
+        raise  # Re-raise the exception after cleanup
 
 def prep_receptors():
     """
