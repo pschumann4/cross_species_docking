@@ -191,7 +191,7 @@ class PDBDownloader:
             "type": "terminal",
             "service": "text",
             "parameters": {
-                "attribute": "rcsb_entry_info.res_combined",
+                "attribute": "rcsb_entry_info.resolution_combined",
                 "operator": "less_or_equal",
                 "negation": False,
                 "value": max_res
