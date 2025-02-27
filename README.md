@@ -102,8 +102,23 @@ conda activate cross-species-docking
 
 - **Ensemble protein set**
 
-    You will need a set of empirically derived structures for the protein you are evaluating. For example, if your chemical is bound to ESR1, you will need to download a set of (ideally unmutated) ESR1 structures from the same species. You can obtain these via an "Advanced Search" within the [RCSB PDB](https://www.rcsb.org/).
-    **NOTE**: If downloading a batch of structures from the RCSB PDB, the files might be in ".ent" format, in which case the "multiple_prot_align.py" script will automatically convert these into PDBs. All other formats will need to be converted to PDB prior to performing this analysis.
+    You will need a set of empirically derived structures for the protein you are evaluating. For example, if your chemical is bound to human ESR1, you will need to download a set of (ideally unmutated) human ESR1 structures. At this time, there is no known minimal size of the ensemble set, but more is better. You can obtain these via an "Advanced Search" within the [RCSB PDB](https://www.rcsb.org/), or you can use the function "get_ensemble.py".
+
+  To use the "get_ensemble.py" script, you will need to install the "requests" python module:
+  ```
+  pip install requests
+  ```
+  The basic usage of the script is as follows (using ESR1 as an example):
+  ```
+  python "get_ensemble.py" --gene ESR1 --species "Homo sapiens" --ref 4MG9
+  ```
+  You can check the additional argument options with:
+  ```
+  python "get_ensemble.py" --help
+  ```
+  The ensemble selection should be based on the reference structure. That is, the gene/protein and the species should be the same. It is also recommended that you use the reference structure ID as the "--ref" argument.
+
+  **NOTE**: If downloading a batch of structures from the RCSB PDB website, the files might be in ".ent" format, in which case the "multiple_prot_align.py" script will automatically convert these into PDBs. All other formats will need to be converted to PDB prior to performing this analysis.
 
 - **Test protein set**
 
