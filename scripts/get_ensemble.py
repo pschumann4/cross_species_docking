@@ -198,19 +198,6 @@ class PDBDownloader:
             }
         }
         query_nodes.append(res_query)
-        
-        # Add protein-only filter
-        protein_only_query = {
-            "type": "terminal",
-            "service": "text",
-            "parameters": {
-                "attribute": "rcsb_entry_info.selected_polymer_entity_types",
-                "operator": "exact_match",
-                "negation": False,
-                "value": "Protein (only)"
-            }
-        }
-        query_nodes.append(protein_only_query)
 
         # Filter for non-mutants if include_mutants is False
         if not include_mutants:
