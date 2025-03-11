@@ -114,14 +114,22 @@ def run_mds(processed_filename, output_dir, mds_time=None):
         del simulation
         del pdb
 
+        # Make a copy of the processed PDB file for RMSD analysis, named with the extension "-temp.pdb"
+        temp_ref = processed_filename.replace("_fixed.pdb", "-temp.pdb")
+        shutil.copy(processed_filename, temp_ref)
+        
         # RMSD Analysis in a separate try-except block with proper cleanup
         print("\nDetermining approximate equilibration point based on RMSD...\n")
         rmsd_results = None
+        reference = None
+        u = None
+        R = None
+        
         try:
-            reference = mda.Universe(processed_filename)
-            reference = reference.select_atoms("protein")
+            reference = mda.Universe(temp_ref)
+            reference_selection = reference.select_atoms("protein")
             u = mda.Universe(mds_output_name, dt=10.0)
-            R = RMSD(u, reference, select="protein")
+            R = RMSD(u, reference_selection, select="protein")
             R.run()
             
             rmsd_results = {
@@ -129,12 +137,23 @@ def run_mds(processed_filename, output_dir, mds_time=None):
                 'rmsd': R.results.rmsd[:, 2].copy()
             }
         finally:
-            # Ensure Universe is properly closed
-            if 'u' in locals():
+            # Ensure Universe objects are properly closed
+            if R is not None:
+                del R
+            if u is not None:
                 u.trajectory.close()
                 del u
-                del R
+            if reference is not None:
                 del reference
+                del reference_selection
+        
+        # Remove the processed PDB file AFTER RMSD analysis is complete
+        if os.path.exists(processed_filename):
+            try:
+                os.remove(processed_filename)
+            except OSError as e:
+                print(f"Warning: Could not remove {processed_filename}: {e}")
+                # Continue execution even if removal fails
 
         if rmsd_results is None:
             raise RuntimeError("RMSD analysis failed")
@@ -216,6 +235,7 @@ def run_mds(processed_filename, output_dir, mds_time=None):
         
         # Extract equilibration model PDB with proper cleanup
         equilibration_pdb_name = os.path.join(output_dir, os.path.basename(pdb_name))
+        u_eq = None
         try:
             u_eq = mda.Universe(mds_output_name)
             u_eq.trajectory[plateau_index]
@@ -224,25 +244,43 @@ def run_mds(processed_filename, output_dir, mds_time=None):
             with mda.Writer(equilibration_pdb_name, protein.n_atoms) as W:
                 W.write(protein)
         finally:
-            if 'u_eq' in locals():
+            if u_eq is not None:
                 u_eq.trajectory.close()
                 del u_eq
                 del protein
+
+        # Remove the temporary PDB file AFTER all analysis is complete and file handles are closed
+        import time
+        max_attempts = 5
+        attempt = 0
+        while os.path.exists(temp_ref) and attempt < max_attempts:
+            try:
+                os.remove(temp_ref)
+                break
+            except OSError as e:
+                attempt += 1
+                print(f"Attempt {attempt}/{max_attempts} to remove {temp_ref} failed: {e}")
+                time.sleep(1)  # Wait for 1 second before retrying
         
-        # Remove the processed PDB file
-        if os.path.exists(processed_filename):
-            os.remove(processed_filename)
+        if attempt == max_attempts and os.path.exists(temp_ref):
+            print(f"Warning: Could not remove temporary file {temp_ref} after {max_attempts} attempts")
+            # Continue execution even if removal fails
 
         return processed_filename, mds_output_name, plateau_time, equilibration_pdb_name
 
     except Exception as e:
         # If any error occurs, ensure files are cleaned up
         print(f"Error during MDS: {str(e)}")
-        if 'processed_filename' in locals() and os.path.exists(processed_filename):
-            try:
-                os.remove(processed_filename)
-            except:
-                pass
+        
+        # Attempt to clean up temporary files
+        temp_ref = processed_filename.replace("_fixed.pdb", "-temp.pdb")
+        for file_path in [processed_filename, temp_ref]:
+            if os.path.exists(file_path):
+                try:
+                    os.remove(file_path)
+                except OSError as oe:
+                    print(f"Warning: Failed to clean up {file_path}: {oe}")
+        
         raise  # Re-raise the exception after cleanup
 
 def prep_receptors():
