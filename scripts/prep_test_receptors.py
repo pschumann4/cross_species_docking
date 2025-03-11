@@ -113,17 +113,14 @@ def run_mds(processed_filename, output_dir, mds_time=None):
         # Clean up simulation and pdb explicitly
         del simulation
         del pdb
-        
-        # Remove the processed PDB file after simulation is complete
-        if os.path.exists(processed_filename):
-            os.remove(processed_filename)
 
         # RMSD Analysis in a separate try-except block with proper cleanup
         print("\nDetermining approximate equilibration point based on RMSD...\n")
         rmsd_results = None
         try:
+            reference = mda.Universe(processed_filename)
+            reference = reference.select_atoms("protein")
             u = mda.Universe(mds_output_name, dt=10.0)
-            reference = u.select_atoms("protein")
             R = RMSD(u, reference, select="protein")
             R.run()
             
@@ -144,6 +141,8 @@ def run_mds(processed_filename, output_dir, mds_time=None):
 
         # Continue with plateau analysis using the copied data
         time = rmsd_results['time']
+        # Add 10 ps to the time array to match the interval
+        time = time + 10.0
         rmsd_values = rmsd_results['rmsd']
 
         def estimate_plateau_point(rmsd_values, time):
@@ -229,6 +228,10 @@ def run_mds(processed_filename, output_dir, mds_time=None):
                 u_eq.trajectory.close()
                 del u_eq
                 del protein
+        
+        # Remove the processed PDB file
+        if os.path.exists(processed_filename):
+            os.remove(processed_filename)
 
         return processed_filename, mds_output_name, plateau_time, equilibration_pdb_name
 
