@@ -7,6 +7,7 @@ import time
 import concurrent.futures
 from typing import List, Optional, Tuple, Union, Dict, Any
 from datetime import datetime
+from collections import defaultdict
 
 class PDBDownloader:
     """
@@ -36,7 +37,7 @@ class PDBDownloader:
                     gene_name: Optional[Union[str, List[str]]] = None,
                     species: Optional[Union[str, List[str]]] = None,
                     terms: Optional[Union[str, List[str]]] = None,
-                    include_mutants: bool = False,
+                    mutations: int = 1,
                     ref_pdb_id: Optional[str] = None,
                     max_res: float = 2.5) -> Dict[str, Any]:
         """
@@ -45,7 +46,7 @@ class PDBDownloader:
         Args:
             gene_name: Gene name to search for
             species: Scientific name(s) of the source organism(s). Can be a single string or a list of strings.
-            include_mutants: Whether to include mutants (if False, only structures with mutation count = 0)
+            mutations: Whether to include mutants (if False, only structures with mutation count < 1)
             ref_pdb_id: PDB ID of a reference structure for structural similarity search
             terms: Text search term(s) for full-text search. Can be a single string or a list of strings.
             max_res: Maximum refinement resolution (default 2.5Å)
@@ -199,19 +200,18 @@ class PDBDownloader:
         }
         query_nodes.append(res_query)
 
-        # Filter for non-mutants if include_mutants is False
-        if not include_mutants:
-            mutation_query = {
-                "type": "terminal",
-                "service": "text",
-                "parameters": {
-                    "attribute": "entity_poly.rcsb_mutation_count",
-                    "operator": "equals",
-                    "negation": False,
-                    "value": 0
-                }
+        # Filter for non-mutants if mutations is False
+        mutation_query = {
+            "type": "terminal",
+            "service": "text",
+            "parameters": {
+                "attribute": "entity_poly.rcsb_mutation_count",
+                "operator": "less_or_equal",
+                "negation": False,
+                "value": mutations
             }
-            query_nodes.append(mutation_query)
+        }
+        query_nodes.append(mutation_query)
 
         # Create the main group of criteria
         main_query_group = {
@@ -236,22 +236,31 @@ class PDBDownloader:
             }
         }
 
-        # Add structural similarity search if ref_pdb_id is provided
+        # Parse reference PDB ID safely
         if ref_pdb_id:
+            parts = ref_pdb_id.split(":")
+            if len(parts) > 1:
+                entry_id = parts[0]
+                asym_id = parts[1]
+            else:
+                # Default to the full ID as both entry_id and asym_id if format is unexpected
+                entry_id = ref_pdb_id
+                asym_id = "A"  # Default chain ID
+                
             similarity_query = {
                 "type": "terminal",
                 "service": "structure",
                 "parameters": {
                     "operator": "strict_shape_match",
-                    "target_search_space": "assembly",
+                    "target_search_space": "polymer_entity_instance",
                     "value": {
-                        "entry_id": ref_pdb_id,
-                        "assembly_id": "1"
+                        "entry_id": entry_id,
+                        "asym_id": asym_id
                     }
                 }
             }
             query["query"]["nodes"].append(similarity_query)
-
+            
         return query
 
     def search_structures(self, query: dict) -> List[str]:
@@ -284,6 +293,27 @@ class PDBDownloader:
             print(f"Error during search: {e}")
             print(f"Response content: {response.text if 'response' in locals() else 'No response'}")
             return []
+
+    def save_pdb_ids_to_file(self, pdb_ids: List[str]) -> str:
+        """
+        Save the PDB IDs to a text file, one ID per line.
+
+        Args:
+            pdb_ids: List of PDB IDs to save
+
+        Returns:
+            str: Path to the saved file
+        """
+        # Create a timestamped filename in the download directory
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_file_path = os.path.join(self.download_dir, f"pdb_ids_{timestamp}.txt")
+        
+        # Write the PDB IDs to the file, one per line
+        with open(output_file_path, 'w') as f:
+            for pdb_id in pdb_ids:
+                f.write(f"{pdb_id}\n")
+        
+        return output_file_path
 
     def download_pdb(self, pdb_id: str, file_format: str = "pdb", max_retries: int = 3) -> Tuple[str, str]:
         """
@@ -436,6 +466,70 @@ class PDBDownloader:
         print(f"\nSaved download results to: {output_file_path}")
         return output_file_path
 
+def count_mutations(pdb_file):
+    """
+    Count engineered mutations in a PDB file by analyzing SEQADV records.
+    
+    Parameters:
+    -----------
+    pdb_file : str
+        Path to the PDB file
+        
+    Returns:
+    --------
+    dict
+        Dictionary with chain IDs as keys and number of mutations as values
+    """
+    mutations = defaultdict(int)
+    
+    try:
+        with open(pdb_file, 'r') as f:
+            lines = f.readlines()
+            
+        # Count engineered mutations from SEQADV records
+        for line in lines:
+            if line.startswith("SEQADV") and "ENGINEERED MUTATION" in line:
+                chain_id = line[16:17].strip()  # Chain ID is at position 16
+                mutations[chain_id] += 1
+                
+    except Exception as e:
+        print(f"Error parsing {pdb_file}: {e}")
+    
+    return dict(mutations)
+
+def id_pdb_mutants(pdb_directory, mutation_threshold=1):
+    """
+    Screen a directory of PDB files and identify those with mutation counts exceeding a threshold.
+    
+    Parameters:
+    -----------
+    pdb_directory : str
+        Path to directory containing PDB files
+    mutation_threshold : int
+        Threshold for mutation count, files with more mutations than this will be reported
+        
+    Returns:
+    --------
+    dict
+        Dictionary with PDB file names as keys and dictionaries of mutation counts per chain as values
+    """
+    results = {}
+    
+    # Get all PDB files in the directory
+    pdb_files = [f for f in os.listdir(pdb_directory) if f.endswith('.pdb')]
+    
+    for pdb_file in pdb_files:
+        pdb_id = os.path.splitext(pdb_file)[0]
+        file_path = os.path.join(pdb_directory, pdb_file)
+        
+        # Count mutations
+        mutation_counts = count_mutations(file_path)
+        
+        # Check if any chain exceeds the threshold
+        if any(count > mutation_threshold for count in mutation_counts.values()):
+            results[pdb_id] = mutation_counts
+    
+    return results
 
 def main():
     """Command-line interface for the PDB Downloader."""
@@ -443,9 +537,9 @@ def main():
     
     parser.add_argument("--gene", type=str, nargs="+", help="Gene name(s). Multiple genes can be provided.")
     parser.add_argument("--species", type=str, nargs="+", help="Scientific name(s) of the source organism(s). Multiple species can be provided.")
-    parser.add_argument("--terms", type=str, nargs="+", help="Full-text search terms. Multiple terms can be provided (combined with OR logic).")
-    parser.add_argument("--include-mutants", action="store_true", help="Include structures with mutations")
-    parser.add_argument("--ref", type=str, help="Reference PDB ID for structural similarity")
+    parser.add_argument("--terms", type=str, nargs="+", help="Full-text search terms. Multiple terms can be provided.")
+    parser.add_argument("--mutations", type=int, default=1, help="Maximum number of allowed mutations (default: 1)")
+    parser.add_argument("--ref", type=str, help="Reference PDB ID for structural similarity (include chain ID, e.g., 1A2B:A)")
     parser.add_argument("--res", type=float, default=2.5, help="Maximum resolution (default: 2.5Å)")
     parser.add_argument("--format", type=str, default="pdb", choices=["pdb", "cif", "xml"], 
                        help="File format for download (default: pdb)")
@@ -459,6 +553,11 @@ def main():
                        help="Skip downloading files that already exist")
     parser.add_argument("--yes", "-y", action="store_true",
                        help="Skip confirmation prompt and proceed with downloads")
+    parser.add_argument("--ids-only", action="store_true",
+                       help="Output PDB IDs to a file without downloading structures")
+    # Add output file argument for mutation analysis results
+    parser.add_argument("--output-mutations", type=str, 
+                       help="Output file for mutation analysis results (default: mutations_TIMESTAMP.csv)")
     
     args = parser.parse_args()
     
@@ -470,7 +569,7 @@ def main():
         gene_name=args.gene,
         species=args.species,
         terms=args.terms,
-        include_mutants=args.include_mutants,
+        mutations=args.mutations,
         ref_pdb_id=args.ref,
         max_res=args.res
     )
@@ -505,11 +604,16 @@ def main():
     
     # Add reference if provided
     if args.ref:
-        filename_parts.append(f"ref-{args.ref}")
+        ref_id = args.ref.split(":")[0]
+        filename_parts.append(f"ref-{ref_id}")
     
     # Add timestamp
     filename_parts.append(timestamp)
     
+    # Make sure the output directory exists
+    if not os.path.exists(args.output_dir):
+        os.makedirs(args.output_dir)
+        
     # Join all parts with underscores
     query_file = "_".join(filename_parts) + ".json"
 
@@ -532,6 +636,12 @@ def main():
     print(f"\nFound {len(pdb_ids)} matching structures: {', '.join(pdb_ids[:10])}" + 
         (f" and {len(pdb_ids) - 10} more" if len(pdb_ids) > 10 else ""))
     
+    # If --ids-only flag is set, save the IDs to a file and exit
+    if args.ids_only:
+        output_file_path = downloader.save_pdb_ids_to_file(pdb_ids)
+        print(f"PDB IDs saved to {output_file_path}")
+        return
+    
     # Ask user to confirm download unless --yes flag is set
     if not args.yes:
         response = input(f"\nDo you want to download {len(pdb_ids)} structures? (y/n): ")
@@ -547,8 +657,99 @@ def main():
     
     print(f"\nDownloaded {len(downloaded_pdb_ids)} structures to {args.output_dir}")
     
-    # Save results to CSV if there were any failed downloads
-    downloader.save_download_results_to_csv(downloaded_pdb_ids, failed_pdb_ids)
+    # Always analyze mutations after download using the mutations threshold from args
+    print("\nAnalyzing structures for mutations...")
+    
+    # Create a consolidated results file
+    results_file = args.output_mutations if args.output_mutations else f"pdb_results_{timestamp}.csv"
+    results_file_path = os.path.join(args.output_dir, results_file)
+    
+    # Create a dictionary to store all PDB information
+    pdb_info = {}
+    
+    # Initialize with all PDB IDs from the search
+    for pdb_id in pdb_ids:
+        pdb_info[pdb_id] = {
+            "downloaded": pdb_id in downloaded_pdb_ids,
+            "mutations": {},
+            "highest_mutation_count": 0,
+            "over_threshold": False,
+            "action": "Kept"
+        }
+    
+    # Run the mutation analysis using the same threshold as the download query
+    mutation_results = id_pdb_mutants(args.output_dir, args.mutations)
+    
+    # Process mutation results
+    structures_over_threshold = []
+    
+    for pdb_id, chain_mutations in mutation_results.items():
+        if pdb_id in pdb_info:
+            pdb_info[pdb_id]["mutations"] = chain_mutations
+            highest_count = max(chain_mutations.values())
+            pdb_info[pdb_id]["highest_mutation_count"] = highest_count
+            pdb_info[pdb_id]["over_threshold"] = highest_count > args.mutations
+            
+            if pdb_info[pdb_id]["over_threshold"]:
+                structures_over_threshold.append(pdb_id)
+    
+    # If structures with mutations exceeding threshold are found, ask user if they want to keep them
+    keep_structures = True
+    if structures_over_threshold:
+        print(f"\nFound {len(structures_over_threshold)} structures with mutations exceeding threshold {args.mutations}:")
+        
+        # Display structures with excessive mutations
+        for pdb_id in structures_over_threshold:
+            chain_mutations = pdb_info[pdb_id]["mutations"]
+            for chain, count in chain_mutations.items():
+                if count > args.mutations:
+                    print(f"  {pdb_id} Chain {chain}: {count} mutations")
+        
+        # Ask user if they want to keep these structures
+        if not args.yes:  # If not in auto-yes mode
+            response = input(f"\nDo you want to keep these {len(structures_over_threshold)} structures with excessive mutations? (y/n): ")
+            keep_structures = response.lower() == 'y'
+        
+        # Process user's choice
+        if not keep_structures:
+            for pdb_id in structures_over_threshold:
+                pdb_info[pdb_id]["action"] = "Removed"
+                
+                # Remove the file if the user doesn't want to keep it
+                try:
+                    file_path = os.path.join(args.output_dir, f"{pdb_id}.{args.format}")
+                    if os.path.exists(file_path):
+                        os.remove(file_path)
+                        print(f"Removed {file_path}")
+                except Exception as e:
+                    print(f"Error removing {pdb_id}: {e}")
+                    pdb_info[pdb_id]["action"] = "Failed to remove"
+            
+            print(f"\nRemoved {len(structures_over_threshold)} structures with excessive mutations")
+    else:
+        print(f"No structures found with more than {args.mutations} mutations.")
+    
+    # Write consolidated results to CSV
+    with open(results_file_path, 'w', newline='') as csvfile:
+        writer = csv.writer(csvfile)
+        
+        # Write header
+        writer.writerow(['PDB_ID', 'Downloaded', 'Mutations_by_Chain', 
+                        'Mutation_Threshold', 'Over_Threshold', 'Action'])
+        
+        # Write data rows
+        for pdb_id, info in pdb_info.items():
+            mutations_str = "; ".join([f"{chain}:{count}" for chain, count in info["mutations"].items()]) if info["mutations"] else "NA"
+            writer.writerow([
+                pdb_id,
+                "Yes" if info["downloaded"] else "No",
+                mutations_str,
+                args.mutations,
+                "Yes" if info["over_threshold"] else "No",
+                info["action"]
+            ])
+    
+    print(f"\nDownload and mutation analysis results saved to {results_file_path}")
 
 
 if __name__ == "__main__":
