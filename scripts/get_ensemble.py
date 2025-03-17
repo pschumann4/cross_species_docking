@@ -3,7 +3,9 @@ import json
 import requests
 import argparse
 import csv
-import time
+import re
+import sys
+from typing import Optional
 import concurrent.futures
 from typing import List, Optional, Tuple, Union, Dict, Any
 from datetime import datetime
@@ -317,7 +319,8 @@ class PDBDownloader:
 
     def download_pdb(self, pdb_id: str, file_format: str = "pdb", max_retries: int = 3) -> Tuple[str, str]:
         """
-        Download a PDB structure file with retry logic.
+        Download a PDB structure file with retry logic. If the initial download fails,
+        try to download the CIF format instead.
 
         Args:
             pdb_id: PDB ID of the structure to download
@@ -328,30 +331,65 @@ class PDBDownloader:
             Tuple[str, str]: (PDB ID, Path to the downloaded file or empty string if failed)
         """
         # Determine file extension based on format
-        extension = file_format
+        primary_extension = file_format
         
         # Construct download URL and local file path
-        local_path = os.path.join(self.download_dir, f"{pdb_id}.{extension}")
+        local_path = os.path.join(self.download_dir, f"{pdb_id}.{primary_extension}")
         
         # Check if file already exists (to avoid redundant downloads)
         if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
             print(f"File already exists: {local_path}")
             return pdb_id, local_path
         
-        # Try alternative URLs if initial one fails
-        urls_to_try = [
-            f"{self.download_url}/{pdb_id}.{extension}",  # Standard URL
-            f"https://files.rcsb.org/view/{pdb_id}.{extension}",  # Alternate URL
+        # Try primary format first
+        primary_url = f"{self.download_url}/{pdb_id}.{primary_extension}"
+        
+        try:
+            print(f"Downloading {pdb_id} from {primary_url}")
+            response = self.session.get(primary_url, timeout=30)
+            response.raise_for_status()
+            
+            # Save the file
+            with open(local_path, "wb") as f:
+                f.write(response.content)
+            
+            print(f"Successfully downloaded {pdb_id} to {local_path}")
+            return pdb_id, local_path
+        
+        except requests.exceptions.RequestException as e:
+            print(f"Error downloading {pdb_id} in {primary_extension} format: {e}")
+            print(f"Trying CIF format instead...")
+            
+            # If primary format fails, try CIF format
+            if primary_extension != "cif":
+                cif_url = f"{self.download_url}/{pdb_id}.cif"
+                cif_local_path = os.path.join(self.download_dir, f"{pdb_id}.cif")
+                
+                try:
+                    print(f"Downloading {pdb_id} from {cif_url}")
+                    response = self.session.get(cif_url, timeout=30)
+                    response.raise_for_status()
+                    
+                    # Save the CIF file
+                    with open(cif_local_path, "wb") as f:
+                        f.write(response.content)
+                    
+                    print(f"Successfully downloaded {pdb_id} as CIF to {cif_local_path}")
+                    return pdb_id, cif_local_path
+                
+                except requests.exceptions.RequestException as e:
+                    print(f"Error downloading {pdb_id} in CIF format: {e}")
+        
+        # If both primary format and CIF fail, try alternative URLs as a last resort
+        alternative_urls = [
+            f"https://files.rcsb.org/view/{pdb_id}.{primary_extension}",  # Alternate URL
             f"https://models.rcsb.org/v1/{pdb_id}/model"  # Models API (for some newer entries)
         ]
         
-        for attempt in range(max_retries):
+        for attempt, url in enumerate(alternative_urls, start=1):
             try:
-                # Use a different URL for each retry
-                current_url = urls_to_try[min(attempt, len(urls_to_try) - 1)]
-                
-                print(f"Downloading {pdb_id} from {current_url}")
-                response = self.session.get(current_url, timeout=30)
+                print(f"Attempting alternate URL {attempt}/{len(alternative_urls)}: {url}")
+                response = self.session.get(url, timeout=30)
                 response.raise_for_status()
                 
                 # Save the file
@@ -362,12 +400,11 @@ class PDBDownloader:
                 return pdb_id, local_path
             
             except requests.exceptions.RequestException as e:
-                print(f"Error downloading {pdb_id} (attempt {attempt+1}/{max_retries}): {e}")
-                if attempt == max_retries - 1:
-                    print(f"Failed to download {pdb_id} after {max_retries} attempts")
+                print(f"Error downloading {pdb_id} from alternate URL: {e}")
+                if attempt == len(alternative_urls):
+                    print(f"Failed to download {pdb_id} after trying all alternatives")
                     return pdb_id, ""
-                print(f"Retrying in 2 seconds...")
-                time.sleep(2)  # Wait before retry
+                print(f"Trying next URL...")
         
         return pdb_id, ""
 
@@ -466,14 +503,21 @@ class PDBDownloader:
         print(f"\nSaved download results to: {output_file_path}")
         return output_file_path
 
-def count_mutations(pdb_file):
+from collections import defaultdict
+import os
+from Bio.PDB import MMCIFParser, MMCIF2Dict, PDBIO
+
+def count_mutations(structure_file):
     """
-    Count engineered mutations in a PDB file by analyzing SEQADV records.
+    Count engineered mutations in a PDB or CIF file.
+    
+    For PDB files: Analyzes SEQADV records for engineered mutations.
+    For CIF files: Analyzes _struct_ref_seq_dif records for engineered mutations.
     
     Parameters:
     -----------
-    pdb_file : str
-        Path to the PDB file
+    structure_file : str
+        Path to the PDB or CIF file
         
     Returns:
     --------
@@ -483,53 +527,242 @@ def count_mutations(pdb_file):
     mutations = defaultdict(int)
     
     try:
-        with open(pdb_file, 'r') as f:
-            lines = f.readlines()
-            
-        # Count engineered mutations from SEQADV records
-        for line in lines:
-            if line.startswith("SEQADV") and "ENGINEERED MUTATION" in line:
-                chain_id = line[16:17].strip()  # Chain ID is at position 16
-                mutations[chain_id] += 1
+        file_extension = os.path.splitext(structure_file)[1].lower()
+        
+        if file_extension == '.pdb':
+            # Process PDB file
+            with open(structure_file, 'r') as f:
+                lines = f.readlines()
                 
+            # Count engineered mutations from SEQADV records
+            for line in lines:
+                if line.startswith("SEQADV") and "ENGINEERED MUTATION" in line:
+                    chain_id = line[16:17].strip()  # Chain ID is at position 16
+                    mutations[chain_id] += 1
+                    
+        elif file_extension == '.cif':
+            # Process CIF file using BioPython
+            cif_dict = MMCIF2Dict.MMCIF2Dict(structure_file)
+            
+            # Check if the necessary category exists
+            if '_struct_ref_seq_dif.details' in cif_dict:
+                details = cif_dict['_struct_ref_seq_dif.details']
+                
+                # Get the chains from the correct field
+                # The chain ID in mmCIF is typically stored in _struct_ref_seq_dif.pdbx_auth_seq_id
+                # or _struct_ref_seq_dif.pdbx_pdb_strand_id depending on the file
+                if '_struct_ref_seq_dif.pdbx_pdb_strand_id' in cif_dict:
+                    chains = cif_dict['_struct_ref_seq_dif.pdbx_pdb_strand_id']
+                elif '_struct_ref_seq_dif.chain_id' in cif_dict:
+                    chains = cif_dict['_struct_ref_seq_dif.chain_id']
+                else:
+                    # Fallback option if standard fields aren't available
+                    print(f"Warning: Chain ID field not found in {structure_file}")
+                    # Print available fields for debugging
+                    ref_seq_fields = [k for k in cif_dict.keys() if k.startswith('_struct_ref_seq_dif')]
+                    if ref_seq_fields:
+                        print(f"Available fields: {ref_seq_fields}")
+                    return dict(mutations)
+                
+                # Count engineered mutations
+                for i, detail in enumerate(details):
+                    if 'ENGINEERED MUTATION' in detail.upper():
+                        chain_id = chains[i].strip()
+                        mutations[chain_id] += 1
+        else:
+            print(f"Unsupported file format: {file_extension}")
+            
     except Exception as e:
-        print(f"Error parsing {pdb_file}: {e}")
+        print(f"Error parsing {structure_file}: {e}")
     
     return dict(mutations)
 
-def id_pdb_mutants(pdb_directory, mutation_threshold=1):
+def id_pdb_mutants(structure_directory, mutation_threshold=1):
     """
-    Screen a directory of PDB files and identify those with mutation counts exceeding a threshold.
+    Screen a directory of PDB/CIF files and identify those with mutation counts exceeding a threshold.
     
     Parameters:
     -----------
-    pdb_directory : str
-        Path to directory containing PDB files
+    structure_directory : str
+        Path to directory containing PDB and/or CIF files
     mutation_threshold : int
         Threshold for mutation count, files with more mutations than this will be reported
         
     Returns:
     --------
     dict
-        Dictionary with PDB file names as keys and dictionaries of mutation counts per chain as values
+        Dictionary with structure file names (without extension) as keys and 
+        dictionaries of mutation counts per chain as values
     """
     results = {}
     
-    # Get all PDB files in the directory
-    pdb_files = [f for f in os.listdir(pdb_directory) if f.endswith('.pdb')]
+    # Get all PDB and CIF files in the directory
+    structure_files = [f for f in os.listdir(structure_directory) 
+                      if f.endswith('.pdb') or f.endswith('.cif')]
     
-    for pdb_file in pdb_files:
-        pdb_id = os.path.splitext(pdb_file)[0]
-        file_path = os.path.join(pdb_directory, pdb_file)
+    if not structure_files:
+        print(f"No PDB or CIF files found in {structure_directory}")
+        return results
+    
+    print(f"Analyzing {len(structure_files)} structure files for mutations...")
+    
+    for structure_file in structure_files:
+        structure_id = os.path.splitext(structure_file)[0]
+        file_path = os.path.join(structure_directory, structure_file)
         
         # Count mutations
         mutation_counts = count_mutations(file_path)
         
         # Check if any chain exceeds the threshold
         if any(count > mutation_threshold for count in mutation_counts.values()):
-            results[pdb_id] = mutation_counts
+            results[structure_id] = mutation_counts
     
     return results
+
+def convert_cif_to_pdb(cif_file: str, output_dir: str) -> Optional[str]:
+    """
+    Convert a structure in mmCIF format to PDB format using custom parsing.
+    Function based on pdb_fromcif.py from the pdb-tools package.
+    
+    Args:
+        cif_file: Path to the CIF file
+        output_dir: Directory to save the converted PDB file
+    
+    Returns:
+        Path to the converted PDB file or None if conversion fails
+    """
+    try:
+        # Create output filename
+        pdb_file_path = os.path.join(output_dir, os.path.splitext(os.path.basename(cif_file))[0] + ".pdb")
+        
+        with open(cif_file, 'r') as f_in, open(pdb_file_path, 'w') as f_out:
+            # Format string for PDB ATOM/HETATM records
+            _a = "{:6s}{:5d} {:<4s}{:1s}{:3s} {:1s}{:4d}{:1s}   {:8.3f}{:8.3f}{:8.3f}"
+            _a += "{:6.2f}{:6.2f}      {:<4s}{:<2s}{:2s}\n"
+
+            in_section, read_atom = False, False
+            label_pos = 0
+            labels = {}
+            empty = set(('.', '?'))
+            prev_model = None
+            atom_num = 0
+            serial = 0
+            model_data = []  # store atom data to account for multi-model files
+            
+            for line in f_in:
+                if line.startswith('loop_'):  # start of section
+                    in_section = True
+
+                elif line.startswith('#'):  # end of section
+                    in_section = False
+                    read_atom = False
+
+                elif in_section and line.startswith('_atom_site.'):  # ATOM/HETATM
+                    read_atom = True
+                    labels[line.strip()] = label_pos
+                    label_pos += 1
+
+                elif read_atom and line.startswith(('ATOM', 'HETATM')):  # convert
+                    fields = re.findall(r'[^"\s]\S*|".+?"', line)  # find enclosed ''
+
+                    # Pick fields, giving preference to auth to match PDBs
+                    model_no = fields[labels.get('_atom_site.pdbx_PDB_model_num')]
+                    if prev_model != model_no:  # first line will trigger
+                        prev_model = model_no
+                        model_data.append([])
+                        serial = 0
+
+                    record = fields[labels.get('_atom_site.group_PDB')]
+                    serial += 1
+
+                    fid = labels.get('_atom_site.auth_atom_id')
+                    if fid is None:
+                        fid = labels.get('_atom_site.label_atom_id')
+                    atname = fields[fid]
+
+                    element = fields[labels.get('_atom_site.type_symbol')]
+                    if element in empty:
+                        element = ' '
+
+                    # handle atom name
+                    if atname[0] == '"' and atname[-1] == '"':
+                        atname = atname[1:-1]
+
+                    if len(atname) < 4 and atname[0].isalpha() and len(element) < 2:
+                        atname = ' ' + atname  # pad
+
+                    altloc = fields[labels.get('_atom_site.label_alt_id')]
+                    if altloc in empty:
+                        altloc = ' '
+
+                    fid = labels.get('_atom_site.auth_comp_id')
+                    if fid is None:
+                        fid = labels.get('_atom_site.label_comp_id')
+                    resname = fields[fid]
+
+                    fid = labels.get('_atom_site.auth_asym_id')
+                    if fid is None:
+                        fid = labels.get('_atom_site.label_asym_id')
+                    chainid = fields[fid]
+
+                    fid = labels.get('_atom_site.auth_seq_id')
+                    if fid is None:
+                        fid = labels.get('_atom_site.label_seq_id')
+                    resnum = int(fields[fid])
+
+                    icode = fields[labels.get('_atom_site.pdbx_PDB_ins_code')]
+                    if icode in empty:
+                        icode = ' '
+
+                    x = float(fields[labels.get('_atom_site.Cartn_x')])
+                    y = float(fields[labels.get('_atom_site.Cartn_y')])
+                    z = float(fields[labels.get('_atom_site.Cartn_z')])
+                    occ = float(fields[labels.get('_atom_site.occupancy')])
+                    bfactor = float(fields[labels.get('_atom_site.B_iso_or_equiv')])
+
+                    charge = fields[labels.get('_atom_site.pdbx_formal_charge')]
+                    try:
+                        charge = charge
+                    except ValueError:
+                        charge = '  '
+
+                    segid = chainid
+
+                    atom_line = _a.format(record, serial, atname, altloc, resname,
+                                          chainid, resnum, icode, x, y, z, occ, bfactor,
+                                          segid, element, charge)
+
+                    atom_num += 1
+
+                    # Check if structure is too large
+                    if atom_num > 99999:
+                        raise ValueError(f"Number of atoms exceeds PDB format limit: {atom_num}")
+                    elif len(chainid) > 1:
+                        raise ValueError(f"Chain ID is too large: {chainid}")
+                    elif resnum > 9999:
+                        raise ValueError(f"Too many residues ({resnum}) in chain {chainid}")
+
+                    model_data[-1].append(atom_line)
+
+            # Write PDB data to output file
+            is_ensemble = len(model_data) > 1
+            if is_ensemble:
+                for model_no, model in enumerate(model_data, start=1):
+                    f_out.write("MODEL {:>5d}\n".format(model_no))
+                    for line in model:
+                        f_out.write(line)
+                    f_out.write('ENDMDL\n')
+            else:
+                for line in model_data[0]:
+                    f_out.write(line)
+
+            f_out.write("{:<80s}\n".format("END"))
+            
+        return pdb_file_path
+        
+    except Exception as e:
+        print(f"Error converting {cif_file} to PDB: {e}")
+        return None
 
 def main():
     """Command-line interface for the PDB Downloader."""
@@ -655,9 +888,10 @@ def main():
         pdb_ids, file_format=args.format, max_retries=3
     )
     
-    print(f"\nDownloaded {len(downloaded_pdb_ids)} structures to {args.output_dir}")
-    
-    # Always analyze mutations after download using the mutations threshold from args
+    # Analyze mutations after download using the mutations threshold from args, unless XML format
+    if args.format == "xml":
+        print("Skipping mutation analysis for XML format as it is not supported.")
+        return
     print("\nAnalyzing structures for mutations...")
     
     # Create a consolidated results file
@@ -683,15 +917,15 @@ def main():
     # Process mutation results
     structures_over_threshold = []
     
-    for pdb_id, chain_mutations in mutation_results.items():
-        if pdb_id in pdb_info:
-            pdb_info[pdb_id]["mutations"] = chain_mutations
-            highest_count = max(chain_mutations.values())
-            pdb_info[pdb_id]["highest_mutation_count"] = highest_count
-            pdb_info[pdb_id]["over_threshold"] = highest_count > args.mutations
+    for structure_id, chain_mutations in mutation_results.items():
+        if structure_id in pdb_info:
+            pdb_info[structure_id]["mutations"] = chain_mutations
+            highest_count = max(chain_mutations.values()) if chain_mutations else 0
+            pdb_info[structure_id]["highest_mutation_count"] = highest_count
+            pdb_info[structure_id]["over_threshold"] = highest_count > args.mutations
             
-            if pdb_info[pdb_id]["over_threshold"]:
-                structures_over_threshold.append(pdb_id)
+            if pdb_info[structure_id]["over_threshold"]:
+                structures_over_threshold.append(structure_id)
     
     # If structures with mutations exceeding threshold are found, ask user if they want to keep them
     keep_structures = True
@@ -751,6 +985,19 @@ def main():
     
     print(f"\nDownload and mutation analysis results saved to {results_file_path}")
 
+    # If there are any CIF files in the output directory, ask user if they want to convert them to PDB format
+    if any(file.endswith('.cif') for file in os.listdir(args.output_dir)):
+        response = input(f"\nDo you want to convert CIF files to PDB format? (y/n): ")
+        if response.lower() == 'y':
+            print("Converting CIF files to PDB format...")
+            for cif_file in os.listdir(args.output_dir):
+                if cif_file.endswith('.cif'):
+                    cif_path = os.path.join(args.output_dir, cif_file)
+                    pdb_path = convert_cif_to_pdb(cif_path, args.output_dir)
+                    if pdb_path:
+                        print(f"Converted {cif_file} to {pdb_path}")
+                    else:
+                        print(f"Failed to convert {cif_file}")
 
 if __name__ == "__main__":
     main()
