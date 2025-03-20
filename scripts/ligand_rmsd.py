@@ -300,24 +300,38 @@ def ligand_rmsd():
         # Edit the ligand_rmsd.txt file so that it only includes the best and worst poses
         with open("ligand_rmsd.txt", "r") as f:
             lines = f.readlines()
+        written_lines = set()
         with open("filtered_ligand_rmsd.txt", "w") as f:
             # Write the first two lines of the file
             for line in lines[:2]:
                 f.write(line)
+            
             # Write the best and worst poses to the file
             for line in lines[2:]:
+                # Create a tuple of the identifying parts of the line to use as a unique key
+                species = line.split("_")[0]
+                model = line.split("model")[1].split(":")[0]
+                line_key = (species, model)
+                
+                # Check if this line should be included (in best or worst poses)
+                should_include = False
+                
                 for pose in best_poses.itertuples():
-                    if (
-                        pose.species == line.split("_")[0]
-                        and str(pose.model) == line.split("model")[1].split(":")[0]
-                    ):
-                        f.write(line)
-                for pose in worst_poses.itertuples():
-                    if (
-                        pose.species == line.split("_")[0]
-                        and str(pose.model) == line.split("model")[1].split(":")[0]
-                    ):
-                        f.write(line)
+                    if pose.species == species and str(pose.model) == model:
+                        should_include = True
+                        break
+                        
+                if not should_include:
+                    for pose in worst_poses.itertuples():
+                        if pose.species == species and str(pose.model) == model:
+                            should_include = True
+                            break
+                
+                # If this line should be included and hasn't been written yet, write it
+                if should_include and line_key not in written_lines:
+                    f.write(line)
+                    written_lines.add(line_key)
+
         print(
             "A filtered ligand RMSD file has been created to only include "
             "the best and worst poses."
