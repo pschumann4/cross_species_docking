@@ -84,7 +84,7 @@ def run_mds(processed_filename, output_dir, mds_time=None):
             
         system = forcefield.createSystem(modeller.topology,
                                     nonbondedMethod=CutoffNonPeriodic,
-                                    nonbondedCutoff=2*nanometer,
+                                    nonbondedCutoff=1*nanometer,
                                     constraints=HBonds,
                                     hydrogenMass=1.5*amu)
         integrator = LangevinMiddleIntegrator(300*kelvin, 1/picosecond, 0.004*picoseconds)
@@ -93,7 +93,7 @@ def run_mds(processed_filename, output_dir, mds_time=None):
 
         # Energy minimization
         print("Performing energy minimization...")
-        simulation.minimizeEnergy()
+        simulation.minimizeEnergy(maxIterations=1000)
 
         # Calculate steps and reporting interval
         steps_per_ps = 250  # for 4 fs timestep
