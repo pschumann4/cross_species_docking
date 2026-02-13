@@ -28,9 +28,21 @@ def prepare_receptor(pdb, pdb_name, flexible_residues=None):
     except FileNotFoundError:
         print("\nThe command 'mk_prepare_receptor' was not found. Please ensure it is installed and available in your PATH.")
 
+
 def get_flexible_residues(residues_file):
     """
-    Read flexible residues from a file
+    Read flexible residues from the summary file created by mds_structure_prep.py
+    
+    The expected format is:
+    FLEXIBLE RESIDUES SUMMARY
+    ==========================================================
+    
+    structure_name: [resid1,resid2,resid3]
+    another_structure: [resid4,resid5]
+    
+    ==========================================================
+    Total structures analyzed: N
+    Structures with flexible residues: M
     
     Parameters:
     -----------
@@ -39,19 +51,133 @@ def get_flexible_residues(residues_file):
     
     Returns:
     --------
-    dict: Dictionary with PDB names as keys and flexible residues as values
+    dict: Dictionary with structure base names as keys and flexible residues lists as values
     """
-    with open(residues_file, "r") as f:
-        res_list = f.readlines()[1:]  # Remove header line
-        res_list = [line for line in res_list if line.strip()]  # Remove empty lines
-    
     flex_residues = {}
-    for line in res_list:
-        pdb_name, res = line.split(":")
-        res = res.split("[")[1].split("]")[0]
-        flex_residues[pdb_name] = res
+    
+    with open(residues_file, "r") as f:
+        lines = f.readlines()
+    
+    # Skip header lines and statistics footer
+    for line in lines:
+        line = line.strip()
+        
+        # Skip empty lines, header, separator lines, and statistics
+        if not line or line.startswith('=') or line.startswith('FLEXIBLE') or \
+           line.startswith('Total') or line.startswith('Structures with'):
+            continue
+        
+        # Parse structure_name: [resid1,resid2,resid3] format
+        if ':' in line and '[' in line and ']' in line:
+            try:
+                structure_name, residues_str = line.split(':', 1)
+                structure_name = structure_name.strip()
+                
+                # Extract residues from brackets
+                residues_str = residues_str.strip()
+                residues_str = residues_str.split('[')[1].split(']')[0].strip()
+                
+                # Store as list of residue IDs (empty list if no residues)
+                if residues_str:
+                    residues = [r.strip() for r in residues_str.split(',')]
+                else:
+                    residues = []
+                
+                flex_residues[structure_name] = residues
+                
+            except (ValueError, IndexError) as e:
+                print(f"Warning: Could not parse line: {line}")
+                print(f"  Error: {e}")
+                continue
     
     return flex_residues
+
+
+def get_base_structure_name(pdb_filename):
+    """
+    Extract the base structure name from a PDB filename.
+    Handles ensemble structures by removing the _ensemble_N suffix.
+    
+    Examples:
+    ---------
+    'structure.pdb' -> 'structure'
+    'structure_ensemble_1.pdb' -> 'structure'
+    'structure_ensemble_10.pdb' -> 'structure'
+    'my_structure_fixed.pdb' -> 'my_structure_fixed'
+    'my_structure_fixed_ensemble_3.pdb' -> 'my_structure_fixed'
+    
+    Parameters:
+    -----------
+    pdb_filename : str
+        PDB filename (with or without path)
+    
+    Returns:
+    --------
+    str: Base structure name without .pdb extension and without _ensemble_N suffix
+    """
+    # Remove .pdb extension
+    base_name = os.path.basename(pdb_filename).replace('.pdb', '')
+    
+    # Check if this is an ensemble structure
+    if '_ensemble_' in base_name:
+        # Split on _ensemble_ and take everything before it
+        parts = base_name.split('_ensemble_')
+        base_name = parts[0]
+    
+    return base_name
+
+
+def format_flexible_residues(pdb_file, residue_ids):
+    """
+    Format flexible residues with chain identifiers from the PDB file.
+    
+    This reads the PDB file to extract chain information for each residue ID,
+    then formats them as required by mk_prepare_receptor (chain:resid format).
+    
+    Parameters:
+    -----------
+    pdb_file : str
+        Path to the PDB file
+    residue_ids : list
+        List of residue IDs as strings (e.g., ['123', '456', '789'])
+    
+    Returns:
+    --------
+    str: Formatted flexible residues string (e.g., 'A:123,A:456,B:789')
+         Returns empty string if no residues or if none could be formatted
+    """
+    if not residue_ids:
+        return ""
+    
+    # Read PDB file to get chain information
+    formatted_residues = []
+    residues_to_find = set(residue_ids.copy())
+    
+    try:
+        with open(pdb_file, 'r') as f:
+            for line in f:
+                if line.startswith('ATOM'):
+                    resid = line[22:26].strip()
+                    if resid in residues_to_find:
+                        chain = line[21]
+                        formatted_res = f"{chain}:{resid}"
+                        if formatted_res not in formatted_residues:
+                            formatted_residues.append(formatted_res)
+                        residues_to_find.discard(resid)
+                        
+                        # Stop if we've found all residues
+                        if not residues_to_find:
+                            break
+    
+    except Exception as e:
+        print(f"Warning: Error reading PDB file {pdb_file}: {e}")
+        return ""
+    
+    if residues_to_find:
+        print(f"Warning: Could not find chain info for residues: {sorted(residues_to_find)}")
+    
+    return ','.join(formatted_residues)
+
 
 def main():
     pdb_dir = input("Enter the path to the directory containing the aligned PDB files: ")
@@ -61,54 +187,106 @@ def main():
     
     os.chdir(pdb_dir)
     pdb_files = [f for f in os.listdir(pdb_dir) if f.endswith(".pdb")]
+    
+    # Separate ensemble and non-ensemble structures for reporting
+    ensemble_files = [f for f in pdb_files if '_ensemble_' in f]
+    non_ensemble_files = [f for f in pdb_files if '_ensemble_' not in f]
+    
+    print(f"\nFound {len(pdb_files)} PDB file(s):")
+    print(f"  Non-ensemble structures: {len(non_ensemble_files)}")
+    print(f"  Ensemble structures: {len(ensemble_files)}")
 
-    flex_residues = input("Are there flexible residues to prepare? (y/n): ").lower()
+    flex_residues = input("\nAre there flexible residues to prepare? (y/n): ").lower()
     while flex_residues not in ["y", "n"]:
         flex_residues = input("Please enter y or n: ").lower()
 
+    flex_residues_dict = {}
     if flex_residues == "y":
-        residues_file = "flex_residues.txt"
-        if not os.path.exists(residues_file):
+        # Check for flex_residues.txt in details subdirectory first
+        details_residues_file = os.path.join(pdb_dir, "details", "flex_residues.txt")
+        
+        if os.path.exists(details_residues_file):
+            print(f"\nFound flex_residues.txt in details subdirectory")
+            residues_file = details_residues_file
+        elif os.path.exists("flex_residues.txt"):
+            print(f"\nFound flex_residues.txt in current directory")
+            residues_file = "flex_residues.txt"
+        else:
             residues_file = input("Enter the path to the flex_residues.txt file: ").strip('"')
             while not os.path.exists(residues_file):
                 residues_file = input("That path does not appear to exist.\nPlease enter the path to the flex_residues.txt file: ").strip('"')
         
+        print(f"Reading flexible residues from: {residues_file}")
         flex_residues_dict = get_flexible_residues(residues_file)
-    else:
-        flex_residues_dict = {}
+        
+        # Report what was loaded
+        print(f"\nLoaded flexible residue data for {len(flex_residues_dict)} structure(s)")
+        if flex_residues_dict:
+            structures_with_flex = sum(1 for residues in flex_residues_dict.values() if residues)
+            print(f"  Structures with flexible residues: {structures_with_flex}")
+            print(f"  Structures without flexible residues: {len(flex_residues_dict) - structures_with_flex}")
 
+    # Process all PDB files
+    processed_count = 0
+    skipped_count = 0
+    
     for pdb in pdb_files:
         if pdb.startswith("ref_"):
             print(f"\nSkipping reference structure {pdb}...")
+            skipped_count += 1
             continue
         
-        pdb_name = pdb.split(".pdb")[0]
+        # Get base structure name (handles ensemble structures)
+        base_name = get_base_structure_name(pdb)
+        pdb_name = pdb.replace(".pdb", "")
+        
         print(f"\nPreparing {pdb_name}...")
+        if '_ensemble_' in pdb:
+            print(f"  (Ensemble structure - using flexible residues from base structure: {base_name})")
 
-        if pdb_name in flex_residues_dict:
-            res = flex_residues_dict[pdb_name]
-            if res:
-                res_id = [i[3:] for i in res.split(",")]
-                with open(pdb, "r") as f:
-                    pdb_lines = f.readlines()
-                    for line in pdb_lines:
-                        if line[22:26].strip() in res_id:
-                            chain = line[21]
-                            res_id[res_id.index(line[22:26].strip())] = chain + ":" + line[22:26].strip()
-                res_id = ",".join(res_id)
-                prepare_receptor(pdb, pdb_name, res_id)
+        # Check if we have flexible residues for this structure's base name
+        if base_name in flex_residues_dict:
+            residue_ids = flex_residues_dict[base_name]
+            
+            if residue_ids:
+                # Format residues with chain information
+                formatted_residues = format_flexible_residues(pdb, residue_ids)
+                
+                if formatted_residues:
+                    print(f"  Applying {len(residue_ids)} flexible residue(s): {formatted_residues}")
+                    prepare_receptor(pdb, pdb_name, formatted_residues)
+                else:
+                    print(f"  Warning: Could not format flexible residues. Preparing rigid receptor...")
+                    prepare_receptor(pdb, pdb_name)
             else:
-                print(f"No flexible residues for {pdb_name}. Preparing rigid receptor...")
+                print(f"  No flexible residues specified for {base_name}. Preparing rigid receptor...")
                 prepare_receptor(pdb, pdb_name)
         else:
+            # No flexible residue data for this structure
+            if flex_residues_dict:  # Only warn if we loaded flex data but this structure isn't in it
+                print(f"  No flexible residue data found for {base_name}. Preparing rigid receptor...")
             prepare_receptor(pdb, pdb_name)
+        
+        processed_count += 1
 
+    # Move PDBQT files to output directory
     if not os.path.exists("pdbqt_files"):
         os.mkdir("pdbqt_files")
+    
+    pdbqt_count = 0
     for f in os.listdir(pdb_dir):
         if f.endswith(".pdbqt"):
             os.replace(f, os.path.join("pdbqt_files", f))
-    print("\nSuccessfully prepared structures have been moved to the 'pdbqt_files' directory.")
+            pdbqt_count += 1
+    
+    # Print summary
+    print("\n" + "="*60)
+    print("Processing Complete")
+    print("="*60)
+    print(f"\nStructures processed: {processed_count}")
+    print(f"Structures skipped (references): {skipped_count}")
+    print(f"PDBQT files created: {pdbqt_count}")
+    print(f"\nSuccessfully prepared structures have been moved to the 'pdbqt_files' directory.")
 
 if __name__ == "__main__":
     main()

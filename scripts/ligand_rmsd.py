@@ -22,19 +22,19 @@ def ligand_rmsd():
     - Optionally, the best and worst poses can be filtered and copied to a new directory.
     """
     # Prompt user for the working directory
-    cwd = input("Enter the directory containing the PDB models: ")
+    pdb_dir = input("Enter the directory containing the PDB models: ")
 
     # Check that the working directory exists
-    while not os.path.exists(cwd):
+    while not os.path.exists(pdb_dir):
         print("The working directory does not exist.")
-        cwd = input('Enter the directory (or type "exit"): ')
+        pdb_dir = input('Enter the directory (or type "exit"): ')
 
     # Change the working directory
-    os.chdir(cwd)
+    os.chdir(pdb_dir)
 
     # Search the directory for a file that starts with "ref_"
     ref_pdb = ""
-    pdb_files = [i for i in os.listdir(cwd) if i.endswith(".pdb")]
+    pdb_files = [i for i in os.listdir(pdb_dir) if i.endswith(".pdb")]
     for file in pdb_files:
         if file.startswith("ref_"):
             ref = input("Is {} the reference PDB file? (y/n): ".format(file))
@@ -115,11 +115,11 @@ def ligand_rmsd():
     # Calculate RMSDs between reference ligand and all query ligands
     rmsd_dict = {}
 
-    files = [i for i in os.listdir(cwd) if i.endswith(".pdb") and "model" in i and i != ref_pdb]
+    files = [i for i in os.listdir(pdb_dir) if i.endswith(".pdb") and "model" in i and i != ref_pdb]
 
     # Calculate RMSDs between reference ligand and all query ligands
     rmsd_dict = {}
-    files = [i for i in os.listdir(cwd) if i.endswith(".pdb") and "model" in i and i != ref_pdb]
+    files = [i for i in os.listdir(pdb_dir) if i.endswith(".pdb") and "model" in i and i != ref_pdb]
     
     for file in files:
         base = os.path.basename(file)
@@ -208,217 +208,6 @@ def ligand_rmsd():
     plt.tight_layout()
     plt.savefig("ligand_rmsd.png", dpi=300)
     plt.show()
-
-    # Determine best and worst poses?
-    filter_poses = input(
-        "\nWould you like to filter the best/worst models based on RMSD? (y/n): "
-    )
-    filter_poses = filter_poses.lower()
-    while filter_poses not in ["y", "n"]:
-        filter_poses = input("Please enter y or n: ")
-        filter_poses = filter_poses.lower()
-    if filter_poses == "y":
-        lig_rmsd_file = "ligand_rmsd.txt"
-        # Initialize a df to hold the ligand RMSD values, species, and model
-        lig_rmsd_df = pd.DataFrame(columns=["lig_rmsd", "species", "model"])
-        # Read the ligand RMSD file
-        with open(lig_rmsd_file, "r") as f:
-            lines = f.readlines()
-            lines = [line.split() for line in lines]
-            lig_rmsds = [line[1] for line in lines[2:]]
-            species = [line[0].split("_")[0] for line in lines[2:]]
-            model = [line[0].split("model")[1].split(":")[0] for line in lines[2:]]
-        # Add the ligand RMSD values to the dataframe
-        lig_rmsd_df["lig_rmsd"] = lig_rmsds
-        lig_rmsd_df["lig_rmsd"] = lig_rmsd_df["lig_rmsd"].astype(float)
-        lig_rmsd_df["species"] = species
-        lig_rmsd_df["model"] = model
-
-        # Rmove any models that have a ligand RMSD > 10 Å
-        lig_rmsd_df = lig_rmsd_df[lig_rmsd_df["lig_rmsd"] < 10]
-
-        # For each species in the dataframe, find the best and worst pose
-        best_poses = []
-        worst_poses = []
-        for species in lig_rmsd_df["species"].unique():
-            species_df = lig_rmsd_df[lig_rmsd_df["species"] == species]
-            best_pose = species_df[
-                species_df["lig_rmsd"] == species_df["lig_rmsd"].min()
-            ]
-            worst_pose = species_df[
-                species_df["lig_rmsd"] == species_df["lig_rmsd"].max()
-            ]
-            best_poses.append(best_pose)
-            worst_poses.append(worst_pose)
-        # Concatenate the best and worst poses into a single dataframe
-        best_poses = pd.concat(best_poses)
-        worst_poses = pd.concat(worst_poses)
-        # Remove the index from the best and worst poses df
-        best_poses.reset_index(drop=True, inplace=True)
-        worst_poses.reset_index(drop=True, inplace=True)
-        # Convert the lig_rmsd column to a float
-        best_poses["lig_rmsd"] = best_poses["lig_rmsd"].astype(float)
-        worst_poses["lig_rmsd"] = worst_poses["lig_rmsd"].astype(float)
-        # Convert the pose column to an integer
-        best_poses["model"] = best_poses["model"].astype(int)
-        worst_poses["model"] = worst_poses["model"].astype(int)
-
-        # Write the best and worst poses to a XLSX file
-        with pd.ExcelWriter("best_and_worst_poses.xlsx") as writer:
-            best_poses.to_excel(writer, sheet_name="best_poses")
-            worst_poses.to_excel(writer, sheet_name="worst_poses")
-        print(
-            "The best and worst poses have been written "
-            'to "best_and_worst_poses.xlsx".'
-        )
-
-        # Create a folder called "filtered_models" to hold the best and worst poses
-        filtered_models_dir = os.path.join(cwd, "filtered_models")
-        if not os.path.exists(filtered_models_dir):
-            os.mkdir(filtered_models_dir)
-
-        # Copy the best and worst poses to the "filtered_models" folder
-        for model in os.listdir(cwd):
-            if model.endswith(".pdb") and "model" in model:
-                # Get the species and model number from the model name
-                species = model.split("_")[0]
-                model_num = model.split("model")[1].split(".pdb")[0]
-                for pose in best_poses.itertuples():
-                    if pose.species == species and pose.model == int(model_num):
-                        shutil.copy(model, filtered_models_dir)
-                for pose in worst_poses.itertuples():
-                    if pose.species == species and pose.model == int(model_num):
-                        shutil.copy(model, filtered_models_dir)
-            if model.startswith("ref_"):
-                shutil.copy(model, filtered_models_dir)
-
-        print(
-            "DONE! The best and worst poses have been copied "
-            'to the "filtered_models" folder.'
-        )
-
-        # Edit the ligand_rmsd.txt file so that it only includes the best and worst poses
-        with open("ligand_rmsd.txt", "r") as f:
-            lines = f.readlines()
-        written_lines = set()
-        with open("filtered_ligand_rmsd.txt", "w") as f:
-            # Write the first two lines of the file
-            for line in lines[:2]:
-                f.write(line)
-            
-            # Write the best and worst poses to the file
-            for line in lines[2:]:
-                # Create a tuple of the identifying parts of the line to use as a unique key
-                species = line.split("_")[0]
-                model = line.split("model")[1].split(":")[0]
-                line_key = (species, model)
-                
-                # Check if this line should be included (in best or worst poses)
-                should_include = False
-                
-                for pose in best_poses.itertuples():
-                    if pose.species == species and str(pose.model) == model:
-                        should_include = True
-                        break
-                        
-                if not should_include:
-                    for pose in worst_poses.itertuples():
-                        if pose.species == species and str(pose.model) == model:
-                            should_include = True
-                            break
-                
-                # If this line should be included and hasn't been written yet, write it
-                if should_include and line_key not in written_lines:
-                    f.write(line)
-                    written_lines.add(line_key)
-
-        print(
-            "A filtered ligand RMSD file has been created to only include "
-            "the best and worst poses."
-        )
-
-        # Re-create the histogram with the best and worst poses highlighted
-        rmsd_values = []
-        # Iterate through the dictionary and add the RMSD values to the list
-        for rmsd in rmsd_dict.values():
-            rmsd_values.append(rmsd)
-        plt.hist(rmsd_values, bins=30)
-        plt.xlabel("RMSD (Å)", fontsize=18)
-        plt.ylabel("Frequency", fontsize=18)
-        # Add vertical lines to show the range of the best and worst poses
-        max_best = best_poses["lig_rmsd"].max()
-        min_best = best_poses["lig_rmsd"].min()
-        plt.axvline(
-            x=max_best,
-            color="#EB0744",
-            linestyle="--",
-            label="Best poses",
-            linewidth=2,
-        )
-        plt.axvline(
-            x=min_best,
-            color="#EB0744",
-            linestyle="--",
-            linewidth=2,
-        )
-        max_worst = worst_poses["lig_rmsd"].max()
-        min_worst = worst_poses["lig_rmsd"].min()
-        plt.axvline(
-            x=max_worst,
-            color="#062576",
-            linestyle="--",
-            label="Worst poses",
-            linewidth=2,
-        )
-        plt.axvline(
-            x=min_worst,
-            color="#062576",
-            linestyle="--",
-            linewidth=2,
-        )
-        for patch in plt.gca().patches:
-            patch.set_facecolor("#A4D4F7")
-            patch.set_edgecolor("black")
-        plt.legend()
-        plt.tight_layout()
-        plt.savefig("labeled_ligand_rmsd.png", dpi=300)
-        plt.show()
-
-        filter_vina = input(
-            "\nWould you like to filter the Vina output according to RMSD "
-            "as well? (y/n): "
-        )
-        filter_vina = filter_vina.lower()
-        while filter_vina not in ["y", "n"]:
-            filter_vina = input("Please enter y or n: ")
-            filter_vina = filter_vina.lower()
-        if filter_vina == "y":
-            vina_logs = input("Enter the path to the Vina output logs: ")
-            while not os.path.exists(vina_logs):
-                vina_logs = input("Please enter a valid path: ")
-            os.chdir(vina_logs)
-            filtered_vina_dir = os.path.join(vina_logs, "filtered_vina_output")
-            if not os.path.exists(filtered_vina_dir):
-                os.mkdir(filtered_vina_dir)
-            vina_files = [i for i in os.listdir(vina_logs) if i.endswith(".pdbqt") and "bound" in i]
-            for file in vina_files:
-                species = file.split("_")[0]
-                if "ligand" in file:
-                    model_num = file.split("ligand_")[1].split(".pdbqt")[0]
-                if "flex" in file:
-                    model_num = file.split("flex_")[1].split(".pdbqt")[0]
-                for pose in best_poses.itertuples():
-                    if pose.species == species and pose.model == int(model_num):
-                        shutil.copy(file, filtered_vina_dir)
-                for pose in worst_poses.itertuples():
-                    if pose.species == species and pose.model == int(model_num):
-                        shutil.copy(file, filtered_vina_dir)
-
-        print(
-            "DONE! The best and worst poses have been copied to "
-            'the "filtered_vina_output" folder.'
-        )
-
 
 if __name__ == "__main__":
     ligand_rmsd()
