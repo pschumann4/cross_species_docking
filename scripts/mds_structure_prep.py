@@ -166,7 +166,7 @@ def get_binding_pocket_residues(pdb_file, ligand_name):
     bindingsite_resnr = [resnr for resnr, res_cent in res_centroids.items() 
                          if euclidean3d(ligand_centroid, res_cent) < cutoff]
     
-    # Also check minimum atom-atom distance < 7.5 Ã…
+    # Also check minimum atom-atom distance < 7.5 Å…
     min_dist_residues = []
     for resnr, coords in res_coords.items():
         min_d = min(euclidean3d(lig_coord, res_coord) 
@@ -355,14 +355,14 @@ def plot_rmsf(rmsf_data, output_path, structure_name, pocket_only=False):
     
     # Add threshold line
     plt.axhline(y=threshold, color='r', linestyle='--', alpha=0.7,
-               label=f'Flexibility threshold: {threshold:.3f} Ã…')
+               label=f'Flexibility threshold: {threshold:.3f} Å…')
     
     # Add mean line
     plt.axhline(y=rmsf_data['mean'], color='g', linestyle='--', alpha=0.7,
-               label=f'Mean: {rmsf_data["mean"]:.3f} Ã…')
+               label=f'Mean: {rmsf_data["mean"]:.3f} Å…')
     
     plt.xlabel('Residue Number', fontsize=12)
-    plt.ylabel('RMSF (Ã…)', fontsize=12)
+    plt.ylabel('RMSF (Å…)', fontsize=12)
     title_suffix = " (Binding Pocket)" if pocket_only else ""
     plt.title(f'Residue Flexibility Analysis: {structure_name}{title_suffix}', fontsize=14)
     plt.legend(fontsize=9, loc='best')
@@ -777,14 +777,14 @@ def run_mds(processed_filename, output_dir, mds_time=None, extract_ensemble=Fals
                    linestyle='--', label=f'Representative Frame: {plateau_results["mean_representative_time"]:.1f} ps')
         plt.axhline(y=plateau_results['plateau_average'], 
                 color='g', linestyle='--', 
-                label=f'Plateau Mean: {plateau_results["plateau_average"]:.3f} Ã…')
+                label=f'Plateau Mean: {plateau_results["plateau_average"]:.3f} Å…')
 
         # Add plateau region shading
         plt.fill_between(time_array[plateau_results['start_index']:],
                         plateau_results['plateau_average'] - plateau_results['plateau_std'],
                         plateau_results['plateau_average'] + plateau_results['plateau_std'],
                         color='g', alpha=0.2,
-                        label=f'Std Dev: Â±{plateau_results["plateau_std"]:.3f} Ã…')
+                        label=f'Std Dev: ±{plateau_results["plateau_std"]:.3f} Å…')
 
         plt.xlabel("Time (ps)", fontsize=12)
         plt.ylabel(r'Frame-to-Frame RMSD ($\AA$)', fontsize=12)
@@ -801,8 +801,8 @@ def run_mds(processed_filename, output_dir, mds_time=None, extract_ensemble=Fals
 
         print(f"\nEquilibration analysis for {structure_name}:")
         print(f"  Representative frame time: {plateau_results['mean_representative_time']:.2f} ps")
-        print(f"  Plateau average RMSD: {plateau_results['plateau_average']:.3f} Ã…")
-        print(f"  Plateau std dev: {plateau_results['plateau_std']:.3f} Ã…")
+        print(f"  Plateau average RMSD: {plateau_results['plateau_average']:.3f} Å…")
+        print(f"  Plateau std dev: {plateau_results['plateau_std']:.3f} Å…")
         print(f"  Plateau duration: {time_array[-1] - plateau_time:.2f} ps")
         
         # Validate plateau_index is within bounds
