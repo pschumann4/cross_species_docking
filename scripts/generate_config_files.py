@@ -307,23 +307,40 @@ def get_config_files():
     coordinate files.
     """
     # Ask the user for the directory where the PDBQT files are located
-    pwd = input("Enter the path to the 'pdbqt_files' directory: ")
+    pdbqt_dir = input("Enter the path to the 'pdbqt_files' directory: ")
 
     # Check if the path exists
-    while not os.path.exists(pwd):
-        pwd = input(
+    while not os.path.exists(pdbqt_dir):
+        pdbqt_dir = input(
             "That path does not appear to exist.\nPlease enter the path to "
             "the directory containing the PDBQT files: "
         )
-    os.chdir(pwd)
+    os.chdir(pdbqt_dir)
 
-    # Ask the user for the name of the ligand PDBQT file that will be used for the docking simulation
-    ligand_name = input(
-        "\nEnter the name of the ligand PDBQT file that will be used for the docking simulation: "
-    )
-    # If the ligand name ends with .pdbqt, remove it
-    if ligand_name.endswith(".pdbqt"):
-        ligand_name = ligand_name.replace(".pdbqt", "")
+    # Ask user if the ligand PDBQT file is in the 'pdbqt_files' directory
+    same_dir = input("Is the ligand PDBQT file in the 'pdbqt_files' directory? (y/n): ").lower()
+    
+    # If not, ask the user for the path to the file and copy it to the current directory
+    if same_dir == "n":
+        ligand_path = input("Enter the path to the ligand PDBQT file: ").strip('"')
+        while not os.path.exists(ligand_path):
+            ligand_path = input("That path does not appear to exist.\nPlease enter the path to the ligand PDBQT file: ").strip('"')
+        ligand_name = os.path.basename(ligand_path).replace('.pdbqt', '')
+
+    # Copy the ligand file to the pdbqt directory if it is not already there
+        try:
+            import shutil
+            shutil.copy(ligand_path, pdbqt_dir)
+            print(f"Copied ligand file to {pdbqt_dir}")
+        except Exception as e:
+            print(f"Error copying ligand file: {e}")
+            return
+    else:
+        ligand_name = input(
+            "\nEnter the name of the ligand PDBQT file that will be used for the docking simulation: "
+        )
+        if ligand_name.endswith(".pdbqt"):
+            ligand_name = ligand_name.replace(".pdbqt", "")
 
     # Gridbox parameter acquisition
     print("\n" + "="*60)
@@ -350,7 +367,7 @@ def get_config_files():
         print("PDB file containing a protein-ligand complex.")
         
         # Try to find reference PDB automatically
-        parent_dir = os.path.dirname(pwd)
+        parent_dir = os.path.dirname(pdbqt_dir)
         reference_pdb = None
         
         # Look for PDB files in parent directory
@@ -391,7 +408,7 @@ def get_config_files():
     
     if gridbox_choice == '2' or gridbox_params is None:
         # EXISTING GRIDBOX FILE
-        parent_dir = os.path.dirname(pwd)
+        parent_dir = os.path.dirname(pdbqt_dir)
         gridbox_file = None
         
         # Search in ../details/ for files ending with _gridbox_coords.txt
@@ -445,7 +462,7 @@ def get_config_files():
     print(f"Grid box center: ({gridbox_params['center_x']}, {gridbox_params['center_y']}, {gridbox_params['center_z']})")
 
     # Get all PDBQT files in the directory
-    pdbqt_files = [f for f in os.listdir(pwd) if f.endswith(".pdbqt") and not f.startswith(ligand_name)]
+    pdbqt_files = [f for f in os.listdir(pdbqt_dir) if f.endswith(".pdbqt") and not f.startswith(ligand_name)]
 
     if not pdbqt_files:
         print("No PDBQT files found in the specified directory.")
@@ -490,7 +507,7 @@ def get_config_files():
         if not num_modes:
             num_modes = "5"
         
-        energy_range = input("Enter the energy range (default: 10): ")
+        energy_range = input("Enter the energy range (default: 3): ")
         if not energy_range:
             energy_range = "10"
         
@@ -530,7 +547,7 @@ def get_config_files():
         
         if flex == "y":
             # Check for flex_residues.txt in ../details subdirectory first
-            parent_dir = os.path.dirname(pwd)
+            parent_dir = os.path.dirname(pdbqt_dir)
             details_residues_file = os.path.join(parent_dir, "details", "flex_residues.txt")
             
             # Try automatic discovery
@@ -706,7 +723,7 @@ def get_config_files():
     print(f"\n{'='*60}")
     print(f"SUCCESS: Created {config_count} configuration files")
     print(f"{'='*60}")
-    print(f"Files saved to: {os.path.abspath(pwd)}")
+    print(f"Files saved to: {os.path.abspath(pdbqt_dir)}")
 
 
 if __name__ == "__main__":
