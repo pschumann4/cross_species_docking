@@ -60,7 +60,7 @@ def run_plip_analysis(dir_path):
     that may vary between species or pH conditions.
     """
     print("\n" + "=" * 70)
-    print("STEP 1: Running PLIP Analysis")
+    print("Running PLIP Analysis")
     print("=" * 70)
     
     # Change to specified directory
@@ -385,7 +385,7 @@ def generate_plifs(plip_results_dir, ligand_name, ref_pdb=None):
     Individual PLIF comparison files are saved for further inspection.
     """
     print("\n" + "=" * 70)
-    print("STEP 2: Generating Protein-Ligand Interaction Fingerprints")
+    print("Generating Protein-Ligand Interaction Fingerprints")
     print("=" * 70)
     
     os.chdir(plip_results_dir)
@@ -503,12 +503,11 @@ def generate_plifs(plip_results_dir, ligand_name, ref_pdb=None):
     results_df.to_csv(summary_file, index=False)
     
     print(f"\nSummary table saved to: {summary_file}")
-    print("\nResults:")
-    print(results_df.to_string(index=False))
     
     # Organize output files
     print("\n" + "=" * 70)
     print("Organizing output files...")
+    print("=" * 70)
     
     output_dir = os.path.join(plip_results_dir, "PLIF_files")
     if not os.path.exists(output_dir):
@@ -525,7 +524,6 @@ def generate_plifs(plip_results_dir, ligand_name, ref_pdb=None):
                 print(f"  Warning: {file} already exists in output directory")
     
     print(f"Moved {files_moved} files to PLIF_files folder")
-    print("=" * 70)
     
     return results_df
 
@@ -555,14 +553,14 @@ def main():
     print("PLIP ANALYSIS AND PLIF GENERATION PIPELINE")
     print("=" * 70)
     print("\nThis script will:")
-    print("1. Run PLIP analysis on all PDB files in your directory")
+    print("1. Run PLIP analysis on all PDB models in your directory")
     print("2. Generate protein-ligand interaction fingerprints (PLIFs)")
     print("3. Compare all test structures against the reference structure")
     print("4. Calculate Tanimoto similarity coefficients")
     print("5. Create organized output files for analysis")
     
     # Get directory path from user
-    dir_path = input("\nEnter the path to the folder containing PDB files: ")
+    dir_path = input("\nEnter the path to the folder containing docked PDB models: ")
     while not os.path.exists(dir_path):
         print("Error: Directory does not exist.")
         dir_path = input("Please enter a valid directory path: ")
@@ -571,7 +569,7 @@ def main():
     plip_results_dir = run_plip_analysis(dir_path)
     
     # Get ligand name from user
-    ligand = input("\nEnter the ligand ID as it appears in the PDB files (e.g., 'UNL', 'LIG'): ")
+    ligand = input("\nEnter the ligand ID as it appears in the PDB models (e.g., 'UNL', 'LIG'): ")
     
     # Generate PLIFs
     results_df = generate_plifs(plip_results_dir, ligand)
