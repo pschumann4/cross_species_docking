@@ -89,6 +89,11 @@ def get_flexible_residues(residues_file):
                 print(f"Warning: Could not parse line: {line}")
                 print(f"  Error: {e}")
                 continue
+
+    # List all species that had flexible residue data loaded
+    print(f"\nFlexible residue data loaded for {len(flex_residues)} structure(s):")
+    for structure in flex_residues:
+        print(f"  {structure}: {len(flex_residues[structure])} flexible residue(s)")
     
     return flex_residues
 
@@ -180,10 +185,10 @@ def format_flexible_residues(pdb_file, residue_ids):
 
 
 def main():
-    pdb_dir = input("Enter the path to the directory containing the aligned PDB files: ")
+    pdb_dir = input("Enter the path to the directory containing the prepared PDB files: ")
     while not os.path.exists(pdb_dir):
         print("That path does not appear to exist.")
-        pdb_dir = input("\nPlease enter the path to the directory containing the aligned PDB files: ")
+        pdb_dir = input("\nPlease enter the path to the directory containing the prepared PDB files: ")
     
     os.chdir(pdb_dir)
     pdb_files = [f for f in os.listdir(pdb_dir) if f.endswith(".pdb")]
@@ -202,15 +207,51 @@ def main():
 
     flex_residues_dict = {}
     if flex_residues == "y":
-        # Check for flex_residues.txt in details subdirectory first
-        details_residues_file = os.path.join(pdb_dir, "details", "flex_residues.txt")
+        # First, search parent directories (upward search)
+        details_residues_file = None
+        current_dir = pdb_dir
+        max_parents_to_search = 3  # How many levels up to search
+        
+        for _ in range(max_parents_to_search):
+            details_path = os.path.join(current_dir, "details")
+            potential_file = os.path.join(details_path, "flex_residues.txt")
+            
+            if os.path.exists(potential_file):
+                details_residues_file = potential_file
+                print(f"\nFound flex_residues.txt in parent directory: {details_residues_file}")
+                break
+            
+            # Move up one directory level
+            parent_dir = os.path.dirname(current_dir)
+            if parent_dir == current_dir:  # Reached root directory
+                break
+            current_dir = parent_dir
+        
+        # If not found in parents, search subdirectories (downward search)
+        if details_residues_file is None:
+            for root, dirs, files in os.walk(pdb_dir, topdown=True):
+                if "details" in dirs:
+                    details_path = os.path.join(root, "details")
+                    potential_file = os.path.join(details_path, "flex_residues.txt")
+                    if os.path.exists(potential_file):
+                        details_residues_file = potential_file
+                        print(f"\nFound flex_residues.txt in subdirectory: {details_residues_file}")
+                        break
+                if root.count(os.sep) - pdb_dir.count(os.sep) >= 3:
+                    break
+        
+        # Now use the found file or prompt user
+        if details_residues_file is not None:
+            residues_file = details_residues_file
+        else:
+            print("\nCould not find flex_residues.txt in parent or subdirectories.")
+            residues_file = input("Enter the path to the flex_residues.txt file: ").strip('"')
+            while not os.path.exists(residues_file):
+                residues_file = input("That path does not appear to exist.\nPlease enter the path to the flex_residues.txt file: ").strip('"')
         
         if os.path.exists(details_residues_file):
-            print(f"\nFound flex_residues.txt in details subdirectory")
+            print(f"\nFound flex_residues.txt in details subdirectory: {details_residues_file}")
             residues_file = details_residues_file
-        elif os.path.exists("flex_residues.txt"):
-            print(f"\nFound flex_residues.txt in current directory")
-            residues_file = "flex_residues.txt"
         else:
             residues_file = input("Enter the path to the flex_residues.txt file: ").strip('"')
             while not os.path.exists(residues_file):
@@ -218,6 +259,16 @@ def main():
         
         print(f"Reading flexible residues from: {residues_file}")
         flex_residues_dict = get_flexible_residues(residues_file)
+
+        # Verify that the flexible residue data corresponds to the structures we have
+        structure_names = set(get_base_structure_name(pdb) for pdb in pdb_files)
+        flex_structure_names = set(flex_residues_dict.keys())
+        missing_structures = structure_names - flex_structure_names
+        if missing_structures:
+            print(f"\nWarning: Flexible residue data is missing for the following structures:")
+            for struct in missing_structures:
+                print(f"  {struct}")
+            print("These structures will be prepared as rigid receptors.")
         
         # Report what was loaded
         print(f"\nLoaded flexible residue data for {len(flex_residues_dict)} structure(s)")
