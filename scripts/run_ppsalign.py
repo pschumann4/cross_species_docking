@@ -496,13 +496,6 @@ def run_integrated_workflow(pdb_dir, ligand, verbose=True):
             - 'pps_results': Mapping of filenames to PPS result paths
             - 'reference': Name of the reference structure used
     """
-    if verbose:
-        print("=" * 70)
-        print("INTEGRATED POCKET EXTRACTION AND ALIGNMENT WORKFLOW")
-        print("=" * 70)
-        print(f"\nInput directory: {pdb_dir}")
-        print(f"Ligand: {ligand}")
-        print()
     
     # Step 1: Extract binding pockets
     if verbose:
@@ -581,11 +574,6 @@ def main():
         ligand=ligand,
         verbose=True
     )
-    
-    if results:
-        print("\n" + "=" * 70)
-        print("Workflow completed successfully!")
-        print("=" * 70)
 
 
 if __name__ == "__main__":
