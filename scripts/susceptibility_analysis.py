@@ -1,30 +1,28 @@
 """
-Cross-Species Susceptibility Assessment via Ensemble-Based Distance Analysis
-========================================
+Cross-Species Susceptibility Assessment via Centroid-Based Distance Analysis
+============================================================================
 
 This script performs susceptibility assessment for cross-species molecular docking
-data using an ensemble-based approach.
+data using a centroid-based ensemble approach.
 
 Methodology:
-1. Loads docking metrics from summary file (with ensemble structure)
-2. Identifies reference species and fits scaler on reference only
-3. Removes reference outliers via robust Mahalanobis
-4. Calculates centroid-based Mahalanobis distance for all species
-5. Applies multi-criteria assessment and generates confidence scores
-6. Generates species-level susceptibility predictions
-
+1. Load docking metrics and identify reference species
+2. Remove outliers from reference and test species using species-specific Mahalanobis distances
+3. Configure confidence thresholds (hard or permissive)
+4. Evaluate ensemble-level confidence scores
+5. Generate PCA visualization
+6. Save comprehensive results
 """
 
 import os
 os.environ["OMP_NUM_THREADS"] = '1'
 import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.patches import Ellipse
-from matplotlib.colors import LinearSegmentedColormap
-from matplotlib.colors import ListedColormap
-import pandas as pd
-import seaborn as sns
-from scipy.spatial.distance import mahalanobis, euclidean
+from matplotlib.lines import Line2D
+from adjustText import adjust_text
+from scipy.spatial.distance import mahalanobis
 from scipy.stats import chi2
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
@@ -32,911 +30,852 @@ from sklearn.covariance import EmpiricalCovariance
 import warnings
 warnings.filterwarnings('ignore')
 
+# ============================================================================
+# CONFIGURATION
+# ============================================================================
 
-def get_ref_info(df):
+# Metric directionality for biological interpretation
+# -1: smaller values are worse (e.g., binding affinity, similarity scores)
+# +1: larger values are worse (e.g., RMSD)
+METRIC_DIRECTION = {
+    'binding_affinity': -1,  # More negative = better binding
+    'lig_rmsd': +1,          # Smaller = better fit
+    'plif_tanimoto': -1,     # Higher = better similarity
+    'ppsscore': -1           # Higher = better score
+}
+
+# Default confidence thresholds
+DEFAULT_THRESHOLDS = {
+    'plif_tanimoto': 0.5,
+    'ppsscore': 0.5,
+    'binding_affinity': -6.0,
+    'lig_rmsd': 2.0
+}
+
+# Outlier detection threshold (chi-square percentile)
+OUTLIER_THRESHOLD_PERCENTILE = 0.975
+
+
+# ============================================================================
+# STEP 1: DATA LOADING AND REFERENCE IDENTIFICATION
+# ============================================================================
+
+def get_reference_species(df):
     """
-    Prompt user to identify the reference species/model.
-    The reference species is the same as the reference model that was used
-    to calculate the metrics. This is the species that we know is susceptible.
+    Prompt user to identify the reference species.
     
-    This must be called BEFORE load_data to enable reference-only scaling.
+    Returns:
+        str: Name of reference species
+    """
+    print("\n" + "="*70)
+    print("REFERENCE SPECIES IDENTIFICATION")
+    print("="*70)
     
-    Parameters:
-    -----------
-    df : pd.DataFrame
-        Dataframe containing docking data (unscaled)
+    print("\nAvailable species:")
+    for species in sorted(df['species'].unique()):
+        n = (df['species'] == species).sum()
+        print(f"  - {species}")
+    
+    while True:
+        ref_species = input("\nEnter reference species name (case-sensitive): ").strip()
+        
+        if ref_species in df['species'].unique():
+            n_ref = (df['species'] == ref_species).sum()
+            print(f"\n✓ Using {ref_species} as reference (n={n_ref} models)")
+            return ref_species
+        else:
+            print(f"✗ Error: '{ref_species}' not found. Please try again.")
+
+
+def load_and_preprocess_data(file_path, ref_species):
+    """
+    Load molecular docking data and standardize using REFERENCE-ONLY scaling.
+    
+    Args:
+        file_path: Path to CSV file
+        ref_species: Name of reference species
         
     Returns:
-    --------
-    ref_species : str
-        Reference species name
+        df: Processed DataFrame
+        scaler: Fitted StandardScaler
+        metric_cols: List of metric column names
     """
-    # Prompt the user to identify the reference species/model
-    ref_species = input("\nEnter the species/PDB name of the reference (case sensitive): ")
+    print("\n" + "="*70)
+    print("DATA LOADING AND PREPROCESSING")
+    print("="*70)
     
-    # Check that this species exists in the dataframe
-    while ref_species not in df['species'].unique():
-        print(f"Error: '{ref_species}' not found in species list.")
-        print("Available species:")
-        for sp in df['species'].unique():
-            print(f"  - {sp}")
-        ref_species = input("Please enter a valid species name: ")
-    
-    n_ref_poses = ((df['species'] == ref_species)).sum()
-    print(f"\nUsing {n_ref_poses} poses from {ref_species} as reference")
-    print("\nIMPORTANT: Scaler will be fit on reference species only")
-    
-    return ref_species
-
-
-def load_data(file_path, ref_species):
-    """
-    Load and preprocess molecular docking data in ensemble format.
-    
-    The scaler is fit ONLY on reference data. 
-    This ensures that standardization reflects the reference distribution, not 
-    the combined dataset. This prevents test species from influencing the metric 
-    space definition.
-    
-    Parameters:
-    -----------
-    file_path : str
-        Path to the CSV file containing docking metrics
-        Expected columns: binding_model, species, ensemble, binding_affinity, 
-                         ppsscore, lig_rmsd, plif_tanimoto
-    ref_species : str
-        Reference species name - scaler will be fit only on this species
-        
-    Returns:
-    --------
-    df : pd.DataFrame
-        Preprocessed dataframe with standardized metrics
-    scaler : StandardScaler
-        Fitted scaler for the metric columns (fit on reference only)
-    metric_cols : list
-        Names of the metric columns
-    """
     # Load data
     df = pd.read_csv(file_path)
     
-    # Verify expected columns
-    expected_cols = ['binding_model', 'species', 'ensemble', 'binding_affinity', 
+    # Validate required columns
+    required_cols = ['binding_model', 'species', 'ensemble', 'binding_affinity', 
                      'ppsscore', 'lig_rmsd', 'plif_tanimoto']
     
-    if not all(col in df.columns for col in expected_cols):
-        print("Warning: Expected columns not found. Found columns:")
-        print(df.columns.tolist())
-        print("\nExpected columns:")
-        print(expected_cols)
-        raise ValueError("CSV file must contain the expected columns")
+    missing_cols = set(required_cols) - set(df.columns)
+    if missing_cols:
+        raise ValueError(f"Missing required columns: {missing_cols}")
     
-    print(f"\nLoaded {len(df)} binding models")
-    print(f"  Species: {df['species'].nunique()} ({', '.join(df['species'].unique())})")
-    print(f"  Ensemble models per species: {df.groupby('species')['ensemble'].nunique().tolist()}")
+    print(f"\nLoaded {len(df)} models from {df['species'].nunique()} species")
     
-    # Identify self-docking poses
-    n_self_docking = (df['ensemble'] == 0).sum()
-    print(f"  Self-docking poses: {n_self_docking}")
-    
-    # Store original values for reference
-    df['binding_affinity_orig'] = df['binding_affinity']
-    df['lig_rmsd_orig'] = df['lig_rmsd']
-    
-    # Invert binding affinity and ligand RMSD so higher values = better
-    # This makes all metrics directionally consistent
-    df["binding_affinity"] = df["binding_affinity"] * -1
-    df["lig_rmsd"] = df["lig_rmsd"] * -1
-    
-    # Define metric columns
+    # Store original metric values
     metric_cols = ['binding_affinity', 'ppsscore', 'lig_rmsd', 'plif_tanimoto']
+    for col in metric_cols:
+        df[f'{col}_orig'] = df[col]
     
-    # Fit scaler on reference data ONLY
-    # This ensures standardization reflects reference distribution, not test species
-    print("\n" + "="*70)
-    print("REFERENCE-ONLY STANDARDIZATION")
-    print("="*70)
+    # Reference-only standardization
+    print(f"\nStandardizing using REFERENCE-ONLY scaling ({ref_species})")
     
     ref_mask = df['species'] == ref_species
-    if not ref_mask.any():
-        raise ValueError(f"Reference species '{ref_species}' not found in data")
-    
-    print(f"\nFitting scaler on reference species only: {ref_species}")
-    print(f"  Reference samples: {ref_mask.sum()}")
-    
-    # Extract reference data for fitting
     ref_data = df.loc[ref_mask, metric_cols]
     
-    print(f"\nReference distribution statistics (before scaling):")
-    print(ref_data.describe().T[['mean', 'std', 'min', 'max']])
+    print(f"  Reference samples: {ref_mask.sum()}")
+    print(f"\nReference statistics (before scaling):")
+    print(ref_data.describe().T[['mean', 'std', 'min', 'max']].to_string())
     
     # Fit scaler on reference only
     scaler = StandardScaler()
     scaler.fit(ref_data)
     
-    print(f"\nScaler parameters (from reference):")
-    for i, col in enumerate(metric_cols):
-        print(f"  {col}: mean={scaler.mean_[i]:.3f}, std={scaler.scale_[i]:.3f}")
-    
-    # Transform ALL data using the reference-fitted scaler
+    # Transform all data using reference scaler
     df[metric_cols] = scaler.transform(df[metric_cols])
     
-    print(f"\nAll data transformed using reference-based scaler")
-    print(f"  Note: Test species may have values outside [-3, +3] range")
-    print(f"  This is expected and correct - they're scaled relative to reference")
+    print(f"\n✓ All data standardized using reference parameters")
     
     # Check for missing values
     if df[metric_cols].isnull().any().any():
-        print("\nWarning: Missing values detected in metric columns")
-        print(df[metric_cols].isnull().sum())
-        print("Rows with missing values will be excluded from analysis")
+        n_missing = df[metric_cols].isnull().any(axis=1).sum()
+        print(f"\n⚠ Warning: Removing {n_missing} rows with missing values")
         df = df.dropna(subset=metric_cols)
-    
-    # Report extreme values (not "outliers" in test species - this is expected)
-    extreme_mask = (np.abs(df[metric_cols]) > 4).any(axis=1)
-    if extreme_mask.sum() > 0:
-        print(f"\nNote: {extreme_mask.sum()} data points with |z-score| > 4")
-        print("For test species, this indicates deviation from reference distribution")
-        by_species = df[extreme_mask].groupby('species').size()
-        print("\nExtreme values by species:")
-        for species, count in by_species.items():
-            print(f"  {species}: {count}")
     
     return df, scaler, metric_cols
 
 
-def correlation_analysis(df, metric_cols, output_dir):
+# ============================================================================
+# STEP 2: OUTLIER REMOVAL
+# ============================================================================
+
+def remove_outliers_by_species(df, metric_cols, outlier_threshold=OUTLIER_THRESHOLD_PERCENTILE):
     """
-    Generate correlation analysis to check for multicollinearity.
+    Remove outliers from each species using species-specific Mahalanobis distances.
     
-    This helps determine whether to use Mahalanobis distance (accounting for
-    correlations) or Euclidean distance (assuming independence).
+    Each species' centroid and covariance are computed independently, and outliers
+    are identified relative to their own species distribution.
     
-    Parameters:
-    -----------
-    df : pd.DataFrame
-        Dataframe containing docking metrics
-    metric_cols : list
-        Names of metric columns
-    output_dir : str
-        Directory to save output plots
+    Args:
+        df: DataFrame with standardized metrics
+        metric_cols: List of metric column names
+        outlier_threshold: Chi-square percentile for outlier cutoff
         
     Returns:
-    --------
-    corr : pd.DataFrame
-        Correlation matrix
+        cleaned_indices: Index of non-outlier models
+        outlier_info: List of dictionaries with outlier details
     """
-    corr = df[metric_cols].corr()
+    print("\n" + "="*70)
+    print("OUTLIER REMOVAL (SPECIES-SPECIFIC MAHALANOBIS)")
+    print("="*70)
     
-    # Generate correlation heatmap
-    print("\nGenerating correlation plot...")
-    fig, ax = plt.subplots(figsize=(8, 6))
-    sns.set_theme(style="white")
-    sns.set_style("whitegrid")
-    
-    sns.heatmap(corr, annot=True, fmt='.2f', cmap="Greens", 
-                square=True, cbar_kws={"shrink": 0.8},
-                xticklabels=['Binding Affinity', 'PPS-Score', 'Ligand RMSD', 'PLIF Tc'],
-                yticklabels=['Binding Affinity', 'PPS-Score', 'Ligand RMSD', 'PLIF Tc'])
-    
-    plt.title("Correlation Matrix of Docking Metrics", fontsize=14, pad=20)
-    plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, "correlation_plot.png"), dpi=300, bbox_inches='tight')
-    print(f"Correlation plot saved to: {os.path.join(output_dir, 'correlation_plot.png')}")
-    plt.close()
-    
-    return corr
-
-
-def calc_centroid_distance_with_outlier_removal(df, metric_cols, ref_species):
-    """
-    Calculate centroid-based Mahalanobis distance with robust outlier removal.
-    =======================================
-    This method identifies and removes outliers from the reference set using
-    Mahalanobis distance, then calculates the centroid and covariance on the
-    cleaned reference data. All models are then scored based on their distance
-    from this robust centroid.
-    
-    Parameters:
-    -----------
-    df : pd.DataFrame
-        Dataframe containing all binding models (already scaled on reference)
-    metric_cols : list
-        Names of metric columns
-    ref_species : str
-        Name of reference species
-        
-    Returns:
-    --------
-    df : pd.DataFrame
-        Dataframe with distance columns added
-    ref_metrics_clean : pd.DataFrame
-        Cleaned reference metrics (outliers removed)
-    ref_centroid : np.array
-        Reference centroid in metric space
-    cov_matrix : np.array
-        Covariance matrix (if Mahalanobis)
-    distance_col : str
-        Name of the distance column
-    """
-    # Extract reference metrics (already scaled)
-    ref_metrics_df = df[df['species'] == ref_species][metric_cols].copy()
-    ref_metrics_df.reset_index(drop=True, inplace=True)
-    print(f"\nInitial reference set: {len(ref_metrics_df)} poses from {ref_species}")
-    
-    # Fit covariance on reference data
-    print("\nFitting covariance on reference data...")
-    cov = EmpiricalCovariance().fit(ref_metrics_df)
-    cov_matrix = cov.covariance_
-    cov_inv = cov.precision_
-    
-    # Calculate reference centroid
-    ref_centroid = ref_metrics_df.mean(axis=0).values
-    
-    print(f"\nInitial reference centroid (standardized space):")
-    for i, col in enumerate(metric_cols):
-        print(f"  {col}: {ref_centroid[i]:.3f}")
-    
-    # Calculate Mahalanobis distance from each reference point to centroid
-    ref_distances = np.array([
-        mahalanobis(ref_metrics_df.iloc[i].values, ref_centroid, cov_inv)
-        for i in range(len(ref_metrics_df))
-    ])
-    
-    # Determine outlier threshold using chi-square distribution
-    # For n dimensions, 97.5th percentile provides robust outlier detection
-    # This corresponds to ~2 standard deviations in normal distribution
     n_dims = len(metric_cols)
-    threshold = np.sqrt(chi2.ppf(0.975, df=n_dims))
+    threshold = np.sqrt(chi2.ppf(outlier_threshold, df=n_dims))
     
     print(f"\nOutlier detection parameters:")
     print(f"  Dimensions: {n_dims}")
-    print(f"  Chi-square threshold (97.5%): {threshold:.3f}")
-    print(f"  (Squared threshold: {threshold**2:.3f})")
+    print(f"  Chi-square threshold ({outlier_threshold*100:.1f}%): {threshold:.3f}")
     
-    print(f"\nReference Mahalanobis distances from centroid:")
-    print(f"  Mean: {ref_distances.mean():.3f}")
-    print(f"  Std: {ref_distances.std():.3f}")
-    print(f"  Min: {ref_distances.min():.3f}")
-    print(f"  Max: {ref_distances.max():.3f}")
-    print(f"  Median: {np.median(ref_distances):.3f}")
+    outlier_info = []
+    all_outlier_mask = pd.Series(False, index=df.index)
     
-    # Identify outliers
-    outlier_mask = ref_distances > threshold
-    n_outliers = outlier_mask.sum()
-    
-    if n_outliers > 0:
-        print(f"\n  *** OUTLIERS DETECTED: {n_outliers} reference pose(s) ***")
-        print("\n  Outlier details:")
-        outlier_indices = np.where(outlier_mask)[0]
-        for idx in outlier_indices:
-            print(f"    Index {idx}: Mahalanobis distance = {ref_distances[idx]:.3f}")
-            print(f"      Metric values: {ref_metrics_df.iloc[idx].values}")
+    for species in df['species'].unique():
+        species_mask = df['species'] == species
+        species_data = df.loc[species_mask, metric_cols]
+        n_species = len(species_data)
         
-        # Remove outliers
-        ref_metrics_clean = ref_metrics_df[~outlier_mask].copy()
-        ref_metrics_clean.reset_index(drop=True, inplace=True)
-        print(f"\n  Cleaned reference set: {len(ref_metrics_clean)} poses (removed {n_outliers})")
+        print(f"\n{species} (n={n_species}):")
         
-        # Refit covariance on cleaned data
-        print(f"\n  Refitting covariance on cleaned reference data...")
-        cov = EmpiricalCovariance().fit(ref_metrics_clean)
-        cov_matrix = cov.covariance_
-        cov_inv = cov.precision_
-        ref_centroid = ref_metrics_clean.mean(axis=0).values
+        # Skip if insufficient data for covariance estimation
+        if n_species < n_dims + 1:
+            print(f"  ⚠ Skipping (need ≥{n_dims+1} samples for covariance)")
+            continue
         
-        print(f"\n  Updated reference centroid (after outlier removal):")
-        for i, col in enumerate(metric_cols):
-            print(f"    {col}: {ref_centroid[i]:.3f}")
-        
-    else:
-        print(f"\n  No outliers detected - all {len(ref_metrics_df)} reference poses retained")
-        ref_metrics_clean = ref_metrics_df.copy()
+        # Compute species-specific centroid and covariance
+        try:
+            cov = EmpiricalCovariance().fit(species_data)
+            species_centroid = species_data.mean(axis=0).values
+            cov_inv = cov.precision_
+            
+            # Compute Mahalanobis distances from species centroid
+            distances = np.array([
+                mahalanobis(species_data.iloc[i].values, species_centroid, cov_inv)
+                for i in range(n_species)
+            ])
+            
+            # Identify outliers
+            outlier_mask = distances > threshold
+            n_outliers = outlier_mask.sum()
+            
+            print(f"  Distance range: [{distances.min():.3f}, {distances.max():.3f}]")
+            print(f"  Mean ± SD: {distances.mean():.3f} ± {distances.std():.3f}")
+            
+            if n_outliers > 0:
+                print(f"  ✗ Outliers detected: {n_outliers}")
+                
+                # Track outliers
+                species_indices = df[species_mask].index
+                for idx_local in np.where(outlier_mask)[0]:
+                    idx_global = species_indices[idx_local]
+                    outlier_info.append({
+                        'species': species,
+                        'binding_model': df.loc[idx_global, 'binding_model'],
+                        'ensemble': int(df.loc[idx_global, 'ensemble']),
+                        'mahalanobis_distance': distances[idx_local],
+                        'threshold': threshold
+                    })
+                
+                # Mark for removal
+                all_outlier_mask.loc[species_indices[outlier_mask]] = True
+            else:
+                print(f"  ✓ No outliers detected")
+                
+        except np.linalg.LinAlgError:
+            print(f"  ⚠ Covariance singular - skipping outlier detection")
+            continue
     
-    print(f"\nFinal reference centroid (standardized space):")
-    for i, col in enumerate(metric_cols):
-        print(f"  {col}: {ref_centroid[i]:.3f}")
+    # Get cleaned indices
+    cleaned_indices = df.index[~all_outlier_mask]
     
-    print(f"\nCovariance matrix (from cleaned reference):")
-    cov_df = pd.DataFrame(cov_matrix, 
-                            index=metric_cols, 
-                            columns=metric_cols)
-    print(cov_df.to_string(float_format='%.4f'))
+    print(f"\n" + "="*70)
+    print(f"OUTLIER REMOVAL SUMMARY")
+    print(f"="*70)
+    print(f"  Total models: {len(df)}")
+    print(f"  Outliers removed: {all_outlier_mask.sum()}")
+    print(f"  Models retained: {len(cleaned_indices)}")
     
-    print(f"\nCorrelation structure in covariance:")
-    corr_from_cov = np.corrcoef(ref_metrics_clean.T)
-    corr_df = pd.DataFrame(corr_from_cov,
-                            index=metric_cols,
-                            columns=metric_cols)
-    print(corr_df.to_string(float_format='%.3f'))
-    
-    # Calculate Mahalanobis distance from centroid for ALL points
-    print(f"\nCalculating Mahalanobis distance from centroid for all {len(df)} models...")
-    
-    def mahalanobis_from_centroid(row):
-        return mahalanobis(row[metric_cols].values, ref_centroid, cov_inv)
-    
-    df['mahalanobis_distance'] = df.apply(mahalanobis_from_centroid, axis=1)
-    
-    # Create similarity score (inverted distance for consistency)
-    df['similarity_score'] = -df['mahalanobis_distance']
-    distance_col = 'mahalanobis_distance'
-    
-    print(f"\nMahalanobis distance statistics:")
-    print(f"\n  Reference species ({ref_species}):")
-    ref_stats = df[df['species']==ref_species]['mahalanobis_distance']
-    print(f"    Mean: {ref_stats.mean():.3f}")
-    print(f"    Std: {ref_stats.std():.3f}")
-    print(f"    Range: [{ref_stats.min():.3f}, {ref_stats.max():.3f}]")
-    
-    print(f"\n  All species combined:")
-    print(f"    Mean: {df['mahalanobis_distance'].mean():.3f}")
-    print(f"    Std: {df['mahalanobis_distance'].std():.3f}")
-    print(f"    Range: [{df['mahalanobis_distance'].min():.3f}, {df['mahalanobis_distance'].max():.3f}]")
-    
-    print(f"\n  Test species (non-reference):")
-    test_stats = df[df['species']!=ref_species]['mahalanobis_distance']
-    print(f"    Mean: {test_stats.mean():.3f}")
-    print(f"    Std: {test_stats.std():.3f}")
-    print(f"    Range: [{test_stats.min():.3f}, {test_stats.max():.3f}]")
-    
-    # Interpretation guide
-    print(f"\n  Interpretation (chi-square with {n_dims} df):")
-    print(f"    Distance < {threshold:.3f}: Within 95% reference distribution")
-    print(f"    Distance > {threshold:.3f}: Outside typical reference range")
-    print(f"\nSimilarity score (inverted distance):")
-    print(f"  Higher values = more similar to reference")
-    print(f"  Mean: {df['similarity_score'].mean():.3f} ± {df['similarity_score'].std():.3f}")
-    print(f"  Range: [{df['similarity_score'].min():.3f}, {df['similarity_score'].max():.3f}]")
-
-    return df, ref_metrics_clean, ref_centroid, cov_matrix, distance_col
+    return cleaned_indices, outlier_info
 
 
-def multicriteria_eval(df, metric_cols, ref_metrics_df, tolerance_std=1.5):
+# ============================================================================
+# STEP 3: THRESHOLD CONFIGURATION
+# ============================================================================
+
+def get_threshold_configuration():
     """
-    Apply multi-criteria evaluation comparing to reference set.
+    Get confidence threshold configuration from user.
     
-    For each metric, we check if the test value falls within tolerance of
-    the reference range (considering ALL reference poses, not just centroid).
+    Returns:
+        thresholds: Dictionary of metric thresholds
+        use_permissive: Boolean for permissive thresholding
+        permissive_factor: Standard deviation multiplier (if permissive thresholding)
+    """
+    print("\n" + "="*70)
+    print("CONFIDENCE THRESHOLD CONFIGURATION")
+    print("="*70)
     
-    Parameters:
-    -----------
-    df : pd.DataFrame
-        Dataframe containing all models
-    metric_cols : list
-        Names of metric columns
-    ref_metrics_df : pd.DataFrame
-        Dataframe with all reference pose metrics (cleaned)
-    tolerance_std : float
-        Tolerance in standard deviations
+    # Hard thresholds
+    print("\nDefault thresholds:")
+    for metric, thresh in DEFAULT_THRESHOLDS.items():
+        print(f"  {metric}: {thresh}")
+    
+    use_defaults = input("\nUse defaults? (y/n): ").strip().lower() in ['y', 'yes']
+    
+    if use_defaults:
+        thresholds = DEFAULT_THRESHOLDS.copy()
+    else:
+        print("\nEnter custom thresholds (press Enter for default):")
+        thresholds = {}
+        for metric, default in DEFAULT_THRESHOLDS.items():
+            value = input(f"  {metric} [{default}]: ").strip()
+            thresholds[metric] = float(value) if value else default
+    
+    # Permissive thresholding option
+    print("\n" + "-"*70)
+    print("PERMISSIVE THRESHOLDING")
+    print("-"*70)
+    print("\nPermissive thresholding adjusts cutoffs based on reference variance,")
+    print("making thresholds more permissive for metrics with high variability.")
+    
+    use_permissive = input("\nUse permissive thresholding? (y/n): ").strip().lower() in ['y', 'yes']
+    
+    if use_permissive:
+        permissive_factor_input = input("  Tolerance (SD multiplier) [1.5]: ").strip()
+        permissive_factor = float(permissive_factor_input) if permissive_factor_input else 1.5
+        print(f"\n✓ Using permissive thresholds (±{permissive_factor} SD)")
+    else:
+        permissive_factor = None
+        print("\n✓ Using hard thresholds")
+    
+    return thresholds, use_permissive, permissive_factor
+
+
+# ============================================================================
+# STEP 4: permissive THRESHOLD CALCULATION
+# ============================================================================
+
+def calculate_permissive_thresholds(thresholds, ref_data_orig, permissive_factor):
+    """
+    Calculate permissive thresholds based on reference variance.
+    
+    permissive thresholding makes cutoffs more permissive by incorporating
+    reference standard deviation weighted by metric directionality.
+    
+    Args:
+        thresholds: Dictionary of hard thresholds
+        ref_data_orig: DataFrame of reference data (original scale)
+        permissive_factor: Standard deviation multiplier
         
     Returns:
-    --------
-    df : pd.DataFrame
-        Dataframe with criteria columns added
-    criteria_cols : list
-        Names of criteria columns
+        effective_thresholds: Dictionary of adjusted thresholds
     """
-    print(f"\nTolerance: {tolerance_std} standard deviations")
-    print("A model passes a criterion if it falls within tolerance of reference range")
+    print("\n" + "="*70)
+    print("CALCULATING PERMISSIVE THRESHOLDS")
+    print("="*70)
+    print(f"\nTolerance: {permissive_factor} standard deviations")
     
-    criteria_cols = []
+    effective_thresholds = {}
     
-    for metric in metric_cols:
-        # Get range from reference poses (cleaned)
-        ref_min = ref_metrics_df[metric].min()
-        ref_max = ref_metrics_df[metric].max()
-        ref_mean = ref_metrics_df[metric].mean()
-        ref_std = ref_metrics_df[metric].std() if len(ref_metrics_df) > 1 else 1.0
+    for metric in thresholds.keys():
+        ref_mean = ref_data_orig[f'{metric}_orig'].mean()
+        ref_std = ref_data_orig[f'{metric}_orig'].std()
+        hard_thresh = thresholds[metric]
+        direction = METRIC_DIRECTION[metric]
         
-        # Define acceptable range
-        lower_bound = ref_min - tolerance_std * ref_std
-        upper_bound = ref_max + tolerance_std * ref_std
+        # Calculate permissive threshold
+        # For "smaller is worse" (direction=-1): subtract SD to be more permissive
+        # For "larger is worse" (direction=+1): add SD to be more permissive
+        permissive_thresh = ref_mean - (direction * permissive_factor * ref_std)
         
-        # Check if within tolerance
-        criterion_name = f"{metric}_ok"
-        df[criterion_name] = ((df[metric] >= lower_bound) & 
-                              (df[metric] <= upper_bound)).astype(int)
-        criteria_cols.append(criterion_name)
-        
-        n_pass = df[criterion_name].sum()
-        pct_pass = 100 * n_pass / len(df)
+        # Ensure permissive threshold is more permissive than hard threshold
+        if direction == -1:  # Smaller is worse
+            effective_thresholds[metric] = min(hard_thresh, permissive_thresh)
+        else:  # Larger is worse
+            effective_thresholds[metric] = max(hard_thresh, permissive_thresh)
         
         print(f"\n{metric}:")
-        print(f"  Reference mean ± std: {ref_mean:.3f} ± {ref_std:.3f}")
-        print(f"  Reference range: [{ref_min:.3f}, {ref_max:.3f}]")
-        print(f"  Acceptable range: [{lower_bound:.3f}, {upper_bound:.3f}]")
-        print(f"  Models passing: {n_pass}/{len(df)} ({pct_pass:.1f}%)")
+        print(f"  Direction: {'larger is worse' if direction > 0 else 'smaller is worse'}")
+        print(f"  Reference: {ref_mean:.3f} ± {ref_std:.3f}")
+        print(f"  Hard threshold: {hard_thresh:.3f}")
+        print(f"  Permissive threshold: {effective_thresholds[metric]:.3f}")
     
-    # Calculate overall criteria score (fraction of criteria passed)
-    df['criteria_score'] = df[criteria_cols].mean(axis=1)
-    
-    print(f"\nOverall Criteria Score:")
-    print(f"  Mean: {df['criteria_score'].mean():.3f} ± {df['criteria_score'].std():.3f}")
-    print(f"  Range: {df['criteria_score'].min():.3f} to {df['criteria_score'].max():.3f}")
-    
-    return df, criteria_cols
+    return effective_thresholds
 
 
-def calc_comb_confidence(df, dist_weight=0.5, crit_weight=0.5):
+# ============================================================================
+# STEP 5: CONFIDENCE SCORING
+# ============================================================================
+
+def evaluate_ensemble_confidence(df, thresholds, use_permissive, permissive_factor, 
+                                ref_data_orig, cleaned_indices):
     """
-    Calculate combined confidence score from distance and criteria.
+    Evaluate confidence level for each ensemble based on threshold criteria.
     
-    Parameters:
-    -----------
-    df : pd.DataFrame
-        Dataframe with similarity_score and criteria_score
-    dist_weight : float
-        Weight for distance-based similarity
-    crit_weight : float
-        Weight for criteria-based assessment
+    Confidence levels:
+    - Strong: 3-4 metrics pass thresholds
+    - Moderate: 2 metrics pass thresholds
+    - Weak: 0-1 metrics pass thresholds
+    
+    Args:
+        df: Full DataFrame
+        thresholds: Dictionary of thresholds
+        use_permissive: Boolean for permissive thresholding
+        permissive_factor: SD multiplier (if permissive thresholding)
+        ref_data_orig: Reference data in original scale
+        cleaned_indices: Indices after outlier removal
         
     Returns:
-    --------
-    df : pd.DataFrame
-        Dataframe with confidence_score added
+        df: DataFrame with confidence scores added
     """
-    print(f"\nWeights:")
-    print(f"  Distance similarity: {dist_weight:.2f}")
-    print(f"  Criteria assessment: {crit_weight:.2f}")
-    
-    # Normalize both scores to 0-1 range before combining
-    # Similarity score is already inverted (higher = better)
-    sim_min = df['similarity_score'].min()
-    sim_max = df['similarity_score'].max()
-    sim_normalized = (df['similarity_score'] - sim_min) / (sim_max - sim_min) if sim_max != sim_min else df['similarity_score']
-    
-    # Criteria score is already 0-1
-    df['confidence_score'] = (dist_weight * sim_normalized + 
-                             crit_weight * df['criteria_score'])
-    
-    print(f"\nConfidence Score Statistics:")
-    print(f"  Mean: {df['confidence_score'].mean():.3f} ± {df['confidence_score'].std():.3f}")
-    print(f"  Range: {df['confidence_score'].min():.3f} to {df['confidence_score'].max():.3f}")
-    
-    return df
-
-
-def classify_susceptibility(df, conf_threshold=0.5, min_criteria=0.5):
-    """
-    Classify models as susceptible, uncertain, or not susceptible.
-    
-    Parameters:
-    -----------
-    df : pd.DataFrame
-        Dataframe with confidence_score and criteria_score
-    conf_threshold : float
-        Minimum confidence score for susceptibility
-    min_criteria : float
-        Minimum criteria score for susceptibility
-        
-    Returns:
-    --------
-    df : pd.DataFrame
-        Dataframe with susceptible and uncertain columns added
-    """
-    print(f"\nThresholds:")
-    print(f"  Confidence threshold: {conf_threshold:.2f}")
-    print(f"  Minimum criteria score: {min_criteria:.2f}")
-    
-    # Classify based on both confidence and criteria
-    df['susceptible'] = ((df['confidence_score'] >= conf_threshold) & 
-                        (df['criteria_score'] >= min_criteria)).astype(int)
-    
-    # Mark uncertain cases (moderate confidence)
-    df['uncertain'] = ((df['confidence_score'] >= 0.3) & 
-                      (df['confidence_score'] < conf_threshold)).astype(int)
-    
-    n_susceptible = df['susceptible'].sum()
-    n_uncertain = df['uncertain'].sum()
-    n_not_susceptible = len(df) - n_susceptible - n_uncertain
-    
-    print(f"\nModel-level Classification:")
-    print(f"  Susceptible: {n_susceptible} ({100*n_susceptible/len(df):.1f}%)")
-    print(f"  Uncertain: {n_uncertain} ({100*n_uncertain/len(df):.1f}%)")
-    print(f"  Not susceptible: {n_not_susceptible} ({100*n_not_susceptible/len(df):.1f}%)")
-    
-    return df
-
-
-def generate_species_summary(df, ref_species):
-    """
-    Generate summary statistics at the species level.
-    
-    For each species, we aggregate across all ensemble models to get:
-    - Best model (highest confidence)
-    - Mean and std of confidence across all models
-    - Final susceptibility call based on best model
-    
-    Parameters:
-    -----------
-    df : pd.DataFrame
-        Dataframe with all models
-    ref_species : str
-        Reference species name
-        
-    Returns:
-    --------
-    summary : pd.DataFrame
-        Species-level summary
-    """
-    # Group by species and get the best model (highest confidence)
-    species_best = df.loc[df.groupby('species')['confidence_score'].idxmax()]
-    
-    # Calculate mean/std for each species
-    species_stats = df.groupby('species').agg({
-        'confidence_score': ['mean', 'std', 'count'],
-        'similarity_score': 'mean',
-        'criteria_score': 'mean'
-    }).reset_index()
-    
-    species_stats.columns = ['species', 'mean_confidence', 'std_confidence', 'n_models',
-                            'mean_similarity', 'mean_criteria']
-    
-    # Merge with best model info
-    summary_data = []
-    
-    for _, best_row in species_best.iterrows():
-        species = best_row['species']
-        stats = species_stats[species_stats['species'] == species].iloc[0]
-        
-        summary_data.append({
-            'species': species,
-            'is_reference': species == ref_species,
-            'n_models_evaluated': int(stats['n_models']),
-            'confidence_score': best_row['confidence_score'],
-            'mean_confidence_all_models': stats['mean_confidence'],
-            'std_confidence_all_models': stats['std_confidence'],
-            'similarity_score': best_row['similarity_score'],
-            'criteria_score': best_row['criteria_score'],
-            'susceptible': 'Yes' if best_row['susceptible'] == 1 else 'No',
-            'uncertain': 'Yes' if best_row['uncertain'] == 1 else 'No',
-            'binding_affinity': best_row['binding_affinity_orig'],
-            'ppsscore': best_row['ppsscore'],
-            'lig_rmsd': best_row['lig_rmsd_orig'],
-            'plif_tanimoto': best_row['plif_tanimoto']
-        })
-    
-    summary_df = pd.DataFrame(summary_data)
-    summary_df = summary_df.sort_values('confidence_score', ascending=False)
-    
-    print("\nSpecies Susceptibility Assessment:")
+    print("\n" + "="*70)
+    print("ENSEMBLE CONFIDENCE EVALUATION")
     print("="*70)
-    for _, row in summary_df.iterrows():
-        status = "REFERENCE" if row['is_reference'] else row['susceptible']
-        print(f"\n{row['species']} - {status}")
-        print(f"  Confidence score: {row['confidence_score']:.3f}")
-        print(f"  Similarity to reference: {row['similarity_score']:.3f}")
-        print(f"  Criteria score: {row['criteria_score']:.3f}")
-        if not row['is_reference']:
-            print(f"  Assessment: {row['susceptible']}" + 
-                  (f" (Uncertain: {row['uncertain']})" if row['uncertain'] == 'Yes' else ""))
     
-    return summary_df
+    # Determine effective thresholds
+    if use_permissive:
+        effective_thresholds = calculate_permissive_thresholds(
+            thresholds, ref_data_orig, permissive_factor
+        )
+    else:
+        effective_thresholds = thresholds.copy()
+        print("\nUsing hard thresholds:")
+        for metric, thresh in effective_thresholds.items():
+            print(f"  {metric}: {thresh:.3f}")
+    
+    # Initialize confidence columns
+    df['confidence_level'] = None
+    df['n_metrics_pass'] = None
+    df['plif_pass'] = None
+    df['pps_pass'] = None
+    df['ba_pass'] = None
+    df['rmsd_pass'] = None
+    
+    # Evaluate each cleaned model
+    print("\n" + "-"*70)
+    print("EVALUATING MODELS")
+    print("-"*70)
+    
+    df_clean = df.loc[cleaned_indices].copy()
+    
+    for idx in df_clean.index:
+        row = df_clean.loc[idx]
+        
+        # Evaluate each metric
+        plif_pass = row['plif_tanimoto_orig'] >= effective_thresholds['plif_tanimoto']
+        pps_pass = row['ppsscore_orig'] >= effective_thresholds['ppsscore']
+        ba_pass = row['binding_affinity_orig'] <= effective_thresholds['binding_affinity']
+        rmsd_pass = row['lig_rmsd_orig'] <= effective_thresholds['lig_rmsd']
+        
+        n_pass = sum([plif_pass, pps_pass, ba_pass, rmsd_pass])
+        
+        # Assign confidence level
+        if n_pass >= 3:
+            confidence = 'Strong'
+        elif n_pass == 2:
+            confidence = 'Moderate'
+        else:
+            confidence = 'Weak'
+        
+        # Store results
+        df.loc[idx, 'confidence_level'] = confidence
+        df.loc[idx, 'n_metrics_pass'] = n_pass
+        df.loc[idx, 'plif_pass'] = plif_pass
+        df.loc[idx, 'pps_pass'] = pps_pass
+        df.loc[idx, 'ba_pass'] = ba_pass
+        df.loc[idx, 'rmsd_pass'] = rmsd_pass
+    
+    # Print summary by species
+    print("\nConfidence distribution by species:")
+    for species in df_clean['species'].unique():
+        species_data = df_clean[df_clean['species'] == species]
+        conf_counts = species_data['confidence_level'].value_counts()
+        
+        print(f"\n{species} (n={len(species_data)}):")
+        for level in ['Strong', 'Moderate', 'Weak']:
+            count = conf_counts.get(level, 0)
+            pct = 100 * count / len(species_data) if len(species_data) > 0 else 0
+            print(f"  {level}: {count} ({pct:.1f}%)")
+    
+    return df
 
 
-def pca_vis(df, metric_cols, ref_species, ref_centroid, output_dir):
+def calculate_species_summary(df, cleaned_indices):
     """
-    Generate PCA projection showing all models with reference centroid.
+    Calculate species-level confidence summary.
     
-    Parameters:
-    -----------
-    df : pd.DataFrame
-        All models
-    metric_cols : list
-        Metric column names
-    ref_species : str
-        Reference species name
-    ref_centroid : np.array
-        Reference centroid in original metric space
-    output_dir : str
-        Output directory
+    Species confidence is determined by best ensemble performance.
+    
+    Args:
+        df: DataFrame with ensemble confidence scores
+        cleaned_indices: Indices after outlier removal
         
     Returns:
-    --------
-    df : pd.DataFrame
-        Dataframe with PCA coordinates added
+        species_summary: DataFrame with per-species statistics
     """
-    # Perform PCA
-    pca = PCA(n_components=2)
-    pca_coords = pca.fit_transform(df[metric_cols])
+    print("\n" + "="*70)
+    print("SPECIES-LEVEL SUMMARY")
+    print("="*70)
     
+    df_clean = df.loc[cleaned_indices].copy()
+    
+    species_summary = []
+    
+    for species in df_clean['species'].unique():
+        species_data = df_clean[df_clean['species'] == species]
+        
+        # Get best ensemble
+        best_idx = species_data['n_metrics_pass'].idxmax()
+        best_ensemble = species_data.loc[best_idx]
+        
+        # Count confidence levels
+        conf_counts = species_data['confidence_level'].value_counts()
+        
+        # Determine species-level confidence (best ensemble)
+        if conf_counts.get('Strong', 0) > 0:
+            species_confidence = 'Strong'
+        elif conf_counts.get('Moderate', 0) > 0:
+            species_confidence = 'Moderate'
+        else:
+            species_confidence = 'Weak'
+        
+        species_summary.append({
+            'species': species,
+            'n_ensembles': len(species_data),
+            'best_ensemble': int(best_ensemble['ensemble']),
+            'best_n_metrics_pass': int(best_ensemble['n_metrics_pass']),
+            'species_confidence': species_confidence,
+            'strong_count': int(conf_counts.get('Strong', 0)),
+            'moderate_count': int(conf_counts.get('Moderate', 0)),
+            'weak_count': int(conf_counts.get('Weak', 0))
+        })
+        
+        print(f"\n{species}: {species_confidence.upper()}")
+        print(f"  Best: Ensemble {best_ensemble['ensemble']} "
+              f"({best_ensemble['n_metrics_pass']}/4 metrics)")
+        print(f"  Distribution: Strong={conf_counts.get('Strong', 0)}, "
+              f"Moderate={conf_counts.get('Moderate', 0)}, "
+              f"Weak={conf_counts.get('Weak', 0)}")
+    
+    return pd.DataFrame(species_summary)
+
+
+# ============================================================================
+# STEP 6: PCA VISUALIZATION
+# ============================================================================
+
+def generate_pca_visualization(df, metric_cols, ref_species, species_summary,
+                              output_dir, cleaned_indices):
+    """
+    Generate PCA visualization colored by species-level confidence.
+    
+    Args:
+        df: DataFrame with all data
+        metric_cols: List of metric columns
+        ref_species: Name of reference species
+        species_summary: DataFrame with species statistics
+        output_dir: Output directory path
+        cleaned_indices: Indices after outlier removal
+        
+    Returns:
+        df: DataFrame with PCA coordinates added
+    """
+    print("\n" + "="*70)
+    print("PCA VISUALIZATION")
+    print("="*70)
+    
+    # Fit PCA on cleaned data, transform all data
+    print("\nFitting PCA on cleaned data...")
+    pca = PCA(n_components=2)
+    pca.fit(df.loc[cleaned_indices, metric_cols])
+    
+    # Transform all data (including outliers for visualization)
+    pca_coords = pca.transform(df[metric_cols])
     df['PCA1'] = pca_coords[:, 0]
     df['PCA2'] = pca_coords[:, 1]
     
-    # Transform reference centroid to PCA space
-    ref_centroid_pca = pca.transform(ref_centroid.reshape(1, -1))[0]
-    
     explained_var = pca.explained_variance_ratio_
-    print(f"\nPCA explained variance:")
+    print(f"\nExplained variance:")
     print(f"  PC1: {explained_var[0]*100:.1f}%")
     print(f"  PC2: {explained_var[1]*100:.1f}%")
     print(f"  Total: {sum(explained_var)*100:.1f}%")
     
-    # Separate reference and test data
-    ref_data = df[df['species'] == ref_species]
-    non_ref = df[df['species'] != ref_species]
+    # Prepare data subsets
+    df_clean = df.loc[cleaned_indices]
+    df_outliers = df.loc[~df.index.isin(cleaned_indices)]
+    ref_data = df_clean[df_clean['species'] == ref_species]
+    non_ref = df_clean[df_clean['species'] != ref_species]
     
-    # Calculate distances from test points to reference centroid in PCA space
-    distances = np.sqrt((non_ref['PCA1'] - ref_centroid_pca[0])**2 + 
-                       (non_ref['PCA2'] - ref_centroid_pca[1])**2)
+    # Map species to confidence colors
+    confidence_colors = {
+        'Strong': '#006400',    # Dark green
+        'Moderate': '#FFA500',  # Orange
+        'Weak': '#8B0000'       # Dark red
+    }
     
-    print(f"\nDistance statistics (test points to reference centroid in PCA space):")
-    print(f"  Min distance: {distances.min():.3f}")
-    print(f"  Max distance: {distances.max():.3f}")
-    print(f"  Mean distance: {distances.mean():.3f}")
+    species_conf_map = dict(zip(
+        species_summary['species'],
+        species_summary['species_confidence']
+    ))
     
-    # Normalize confidence scores to size range (20 to 200)
-    conf_min, conf_max = non_ref['confidence_score'].min(), non_ref['confidence_score'].max()
-    sizes = 20 + (non_ref['confidence_score'] - conf_min) / (conf_max - conf_min) * 180
-    
-    print(f"\nConfidence score range: [{conf_min:.3f}, {conf_max:.3f}]")
-    
-    # Create custom colormap
-    custom_cmap = LinearSegmentedColormap.from_list(
-        'distance_cmap', ["#AA0743", "#0C76D2"])
-    
-    # Create visualization
+    # Create figure
     fig, ax = plt.subplots(figsize=(12, 8))
     
-    # Plot test species with distance-based color and confidence-based size
-    scatter = ax.scatter(non_ref['PCA1'], non_ref['PCA2'], 
-                        c=distances,
-                        cmap=custom_cmap, s=sizes, alpha=0.8, 
-                        edgecolors='black', linewidth=0.5,
-                        label='Test Species')
+    # Plot outliers
+    if len(df_outliers) > 0:
+        ax.scatter(df_outliers['PCA1'], df_outliers['PCA2'],
+                  c='lightgray', s=50, alpha=0.4, marker='x',
+                  label='Outliers (removed)', zorder=1)
     
-    # Calculate covariance for reference ellipse
+    # Calculate species centroids first (needed for connecting lines)
+    species_centroids = {}
+    for species in non_ref['species'].unique():
+        species_data = non_ref[non_ref['species'] == species]
+        centroid_x = species_data['PCA1'].mean()
+        centroid_y = species_data['PCA2'].mean()
+        species_centroids[species] = (centroid_x, centroid_y)
+    
+    # Plot connecting lines from each point to its centroid
+    for species in non_ref['species'].unique():
+        species_data = non_ref[non_ref['species'] == species]
+        centroid_x, centroid_y = species_centroids[species]
+        conf_color = confidence_colors[species_conf_map[species]]
+        
+        for idx, row in species_data.iterrows():
+            ax.plot([row['PCA1'], centroid_x], 
+                   [row['PCA2'], centroid_y],
+                   color=conf_color, alpha=0.15, linewidth=0.8, 
+                   linestyle='-', zorder=1.5)
+    
+    # Plot non-reference models by confidence
+    for conf_level in ['Weak', 'Moderate', 'Strong']:
+        conf_data = non_ref[non_ref['confidence_level'] == conf_level]
+        if len(conf_data) > 0:
+            ax.scatter(conf_data['PCA1'], conf_data['PCA2'],
+                      c=confidence_colors[conf_level], s=100, alpha=0.6,
+                      edgecolors='black', linewidth=0.5,
+                      label=f'{conf_level} Confidence', zorder=2)
+    
+    # Plot species centroids and prepare labels for adjustment
+    texts = []
+    for species in non_ref['species'].unique():
+        centroid_x, centroid_y = species_centroids[species]
+        conf_color = confidence_colors[species_conf_map[species]]
+        
+        ax.scatter(centroid_x, centroid_y,
+                  c=conf_color, s=120, alpha=1.0,
+                  edgecolors='black', linewidth=2, marker='D',
+                  zorder=5)
+        
+        # Create text annotation but don't position it yet
+        text = ax.text(centroid_x, centroid_y, species,
+                      fontsize=10, fontweight='bold',
+                      bbox=dict(boxstyle='round,pad=0.4',
+                               facecolor=conf_color, alpha=0.8,
+                               edgecolor='black', linewidth=1.5),
+                      zorder=6, ha='center', va='center')
+        texts.append(text)
+    
+    # Plot reference cluster with ellipse
     ref_coords = np.column_stack([ref_data['PCA1'], ref_data['PCA2']])
-    cov_matrix = np.cov(ref_coords.T)
+    ref_centroid = ref_coords.mean(axis=0)
     
-    # Eigenvalue decomposition for ellipse parameters
+    # Covariance ellipse (2 SD)
+    cov_matrix = np.cov(ref_coords.T)
     eigenvalues, eigenvectors = np.linalg.eig(cov_matrix)
     order = eigenvalues.argsort()[::-1]
     eigenvalues = eigenvalues[order]
     eigenvectors = eigenvectors[:, order]
     
-    # Calculate ellipse angle and dimensions (2 std devs = ~95% coverage)
     angle = np.degrees(np.arctan2(eigenvectors[1, 0], eigenvectors[0, 0]))
-    width, height = 2 * 2 * np.sqrt(eigenvalues)  # 2 std devs
+    width, height = 2 * 2 * np.sqrt(eigenvalues)
     
-    # Draw ellipse centered on PCA-transformed centroid
-    ellipse = Ellipse(ref_centroid_pca, width, height, angle=angle,
-                     facecolor='#004D40', edgecolor="#076757",
-                     linewidth=2, linestyle='-', alpha=0.5, zorder=4)
+    ellipse = Ellipse(ref_centroid, width, height, angle=angle,
+                     facecolor="#033B57", edgecolor="#0A5276",
+                     linewidth=3, alpha=0.3, zorder=3)
     ax.add_patch(ellipse)
     
-    # Plot reference species points
+    # Plot reference points
     ax.scatter(ref_data['PCA1'], ref_data['PCA2'],
-              c='#004D40', s=120, alpha=0.8, marker='^',
-              edgecolors='#00251A', linewidth=1.5,
-              label=f'Reference ({ref_species})', zorder=5)
+              c='#0A5276', s=120, alpha=0.8, marker='^',
+              edgecolors='#033B57', linewidth=1.5,
+              label=f'Reference ({ref_species})', zorder=4)
     
     # Plot reference centroid
-    ax.scatter(ref_centroid_pca[0], ref_centroid_pca[1],
-              c="#000000", s=120, alpha=1.0, marker='s',
-              label='Reference centroid', zorder=6)
+    ax.scatter(ref_centroid[0], ref_centroid[1],
+              c='black', s=120, alpha=1.0, marker='s',
+              edgecolors='white', linewidth=2,
+              label='Reference Centroid', zorder=7)
     
-    # Add colorbar for distance
-    cbar = plt.colorbar(scatter, ax=ax)
-    cbar.set_label('Distance from Reference Centroid', fontsize=14)
+    # Adjust text positions to avoid overlaps
+    # This iteratively moves labels to minimize overlaps
+    adjust_text(texts, 
+                arrowprops=dict(arrowstyle='-', color='gray', lw=0.5, alpha=0.5),
+                expand_points=(1.5, 1.5),  # Expand bounding boxes for clearance
+                expand_text=(1.2, 1.2),
+                force_points=(0.3, 0.3),   # Force away from points
+                force_text=(0.5, 0.5),     # Force labels away from each other
+                ax=ax)
     
-    # Labels and title
+    # Configure plot
     ax.set_xlabel(f'PC1 ({explained_var[0]*100:.1f}%)', fontsize=14)
     ax.set_ylabel(f'PC2 ({explained_var[1]*100:.1f}%)', fontsize=14)
-    ax.legend(fontsize=12, loc='best')
-    ax.grid(False)
+    
+    # Add centroid marker to legend
+    handles, labels = ax.get_legend_handles_labels()
+    centroid_handle = Line2D([0], [0], marker='D', color='w',
+                            markerfacecolor='gray', markersize=10,
+                            markeredgecolor='black', markeredgewidth=2,
+                            label='Species Centroid', linestyle='')
+    handles.append(centroid_handle)
+    
+    ax.legend(handles=handles, fontsize=11, loc='best', 
+             framealpha=0.95, edgecolor='black')
+    ax.grid(True, alpha=0.3, linestyle='--')
     
     plt.tight_layout()
-    output_path = os.path.join(output_dir, "pca_projection_centroid.png")
+    
+    # Save figure
+    output_path = os.path.join(output_dir, "pca_plot.png")
     plt.savefig(output_path, dpi=300, bbox_inches='tight')
-    print(f"\nPCA projection saved to: {output_path}")
+    print(f"\n✓ PCA plot saved: {output_path}")
     plt.close()
     
     return df
 
 
-def save_results(df, species_summary, criteria_cols, metric_cols, output_dir):
+# ============================================================================
+# STEP 7: SAVE RESULTS
+# ============================================================================
+
+def save_results(df, species_summary, outlier_info, thresholds, 
+                use_permissive, permissive_factor, output_dir, cleaned_indices):
     """
-    Save detailed results to CSV files.
+    Save all analysis results to files.
     
-    Parameters:
-    -----------
-    df : pd.DataFrame
-        All models with analysis results
-    species_summary : pd.DataFrame
-        Species-level summary
-    criteria_cols : list
-        Criteria column names
-    metric_cols : list
-        Metric column names
-    output_dir : str
-        Output directory
+    Outputs:
+    1. per_model_results.csv - All models with confidence scores
+    2. species_summary.csv - Per-species statistics
+    3. outliers_removed.csv - Tracked outliers (if any)
+    4. analysis_summary.txt - Human-readable summary
+    
+    Args:
+        df: Full DataFrame with all results
+        species_summary: DataFrame with species statistics
+        outlier_info: List of outlier dictionaries
+        thresholds: Dictionary of thresholds used
+        use_permissive: Boolean for permissive thresholding
+        permissive_factor: SD multiplier (if permissive)
+        output_dir: Output directory
+        cleaned_indices: Indices after outlier removal
     """
-    # Determine which distance column exists
-    if 'mahalanobis_distance' in df.columns:
-        distance_col = 'mahalanobis_distance'
-    else:
-        distance_col = 'euclidean_distance'
-    
-    # 1. All models with full analysis
-    output_cols = ['binding_model', 'species', 'ensemble', 
-                  'binding_affinity_orig', 'ppsscore', 'lig_rmsd_orig', 'plif_tanimoto',
-                  distance_col, 'similarity_score', 'criteria_score', 'confidence_score',
-                  'susceptible', 'uncertain', 'PCA1', 'PCA2']
-    
-    all_models_file = os.path.join(output_dir, "all_models_assessment.csv")
-    df[output_cols].to_csv(all_models_file, index=False, float_format='%.4f')
-    print(f"All models results: {all_models_file}")
-    
-    # 2. Species summary
-    species_file = os.path.join(output_dir, "species_susceptibility_summary.csv")
-    species_summary.to_csv(species_file, index=False, float_format='%.4f')
-    print(f"Species summary: {species_file}")
-    
-    # 3. Simple susceptibility list
-    list_file = os.path.join(output_dir, "susceptibility_list.txt")
-    with open(list_file, 'w') as f:
-        f.write("SPECIES SUSCEPTIBILITY ASSESSMENT\n")
-        f.write("="*70 + "\n\n")
-        f.write("Methodology: Centroid-based Mahalanobis distance with outlier removal\n")
-        f.write("Reference-only scaler fitting and covariance estimation\n\n")
-        
-        for _, row in species_summary.iterrows():
-            if not row['is_reference']:
-                f.write(f"{row['species']}: {row['susceptible']}\n")
-                f.write(f"  Confidence: {row['confidence_score']:.3f}\n")
-                f.write(f"  Uncertainty: {row['uncertain']}\n\n")
-    
-    print(f"Susceptibility list: {list_file}")
-
-
-def main():
-    """
-    Main execution function for ensemble-based susceptibility assessment.
-    """
-    print("\n" + "="*70)
-    print("ENSEMBLE-BASED SUSCEPTIBILITY ASSESSMENT")
-    print("="*70)
-    print("\nMethodological overview:")
-    print("  1. Load data and identify reference species")
-    print("  2. Fit scaler on reference species only and transform all data")
-    print("  3. Correlation analysis to check metric relationships")
-    print("  4. Remove outliers from reference set using Mahalanobis distance")
-    print("  5. Calculate Mahalanobis distance from reference centroid for all models")
-    print("  6. Multi-criteria evaluation based on reference pose distribution")
-    print("  7. Combine distance and criteria into overall confidence score")
-    print("  8. Classify susceptibility based on confidence and criteria")
-    print("  9. Generate species-level summary and PCA visualization")
-    print("  10. Save all results to output directory")
-    
-    # =========================================================================
-    # STEP 1: Load data (preliminary - for reference identification)
-    # =========================================================================
-    summary_file = input("\nEnter the file path for the summary CSV file: ")
-    summary_file = summary_file.replace('"', '').strip()
-    
-    if not os.path.exists(summary_file):
-        print(f"Error: File not found: {summary_file}")
-        return
-    
-    output_dir = os.path.dirname(summary_file) if os.path.dirname(summary_file) else '.'
-    
-    # Load data without scaling to identify reference
-    df_temp = pd.read_csv(summary_file)
-    
-    # =========================================================================
-    # STEP 2: Identify reference species
-    # =========================================================================
-    print("\n" + "="*70)
-    print("REFERENCE SPECIES IDENTIFICATION")
-    print("="*70)
-    ref_species = get_ref_info(df_temp)
-
-    # Reload data with reference-only scaling
-    df, scaler, metric_cols = load_data(summary_file, ref_species)
-    
-    # =========================================================================
-    # STEP 3: Correlation analysis
-    # =========================================================================
-    print("\n" + "="*70)
-    print("CORRELATION ANALYSIS")
-    print("="*70)  
-    
-    corr_matrix = correlation_analysis(df, metric_cols, output_dir)
-    
-    # =========================================================================
-    # STEP 4: Calculate centroid-based distances with outlier removal
-    # =========================================================================
-    print("\n" + "="*70)
-    print("CENTROID-BASED DISTANCE WITH OUTLIER REMOVAL")
-    print("="*70)
-
-    df, ref_metrics_clean, ref_centroid, cov_matrix, distance_col = \
-        calc_centroid_distance_with_outlier_removal(
-            df, metric_cols, ref_species
-        )
-    
-    # =========================================================================
-    # STEP 5: Multi-criteria assessment
-    # =========================================================================    
-    print("\n" + "="*70)
-    print("MULTI-CRITERIA ASSESSMENT")
-    print("="*70)
-    
-    tolerance = input("\nEnter tolerance in standard deviations [default=1.5]: ").strip()
-    tolerance = float(tolerance) if tolerance else 1.5
-    
-    df, criteria_cols = multicriteria_eval(
-        df, metric_cols, ref_metrics_clean, tolerance_std=tolerance
-    )
-    
-    # =========================================================================
-    # STEP 6: Calculate confidence scores
-    # =========================================================================    
-    print("\n" + "="*70)
-    print("CONFIDENCE SCORE CALCULATION")
-    print("="*70)
-
-    dist_weight = input("\nEnter weight for distance similarity [default=0.5]: ").strip()
-    dist_weight = float(dist_weight) if dist_weight else 0.5
-    crit_weight = 1.0 - dist_weight
-    
-    df = calc_comb_confidence(df, dist_weight, crit_weight)
-    
-    # =========================================================================
-    # STEP 7: Classify susceptibility (model level)
-    # =========================================================================    
-    print("\n" + "="*70)
-    print("SUSCEPTIBILITY CLASSIFICATION")
-    print("="*70)
-
-    conf_thresh = input("\nEnter confidence threshold for susceptibility [default=0.5]: ").strip()
-    conf_thresh = float(conf_thresh) if conf_thresh else 0.5
-    
-    min_crit = input("Enter minimum criteria score [default=0.5]: ").strip()
-    min_crit = float(min_crit) if min_crit else 0.5
-    
-    df = classify_susceptibility(df, conf_thresh, min_crit)
-    
-    # =========================================================================
-    # STEP 8: Generate species-level summary
-    # =========================================================================    
-    print("\n" + "="*70)
-    print("SPECIES-LEVEL SUMMARY")
-    print("="*70)
-    species_summary = generate_species_summary(df, ref_species)
-    
-    # =========================================================================
-    # STEP 9: Generate PCA visualization
-    # =========================================================================    
-    print("\n" + "="*70)
-    print("GENERATING PCA PROJECTION")
-    print("="*70)
-    
-    df = pca_vis(df, metric_cols, ref_species, ref_centroid, output_dir)
-    
-    # =========================================================================
-    # STEP 10: Save results
-    # =========================================================================
     print("\n" + "="*70)
     print("SAVING RESULTS")
     print("="*70)
-
-    save_results(df, species_summary, criteria_cols, metric_cols, output_dir)
     
-    # =========================================================================
-    # COMPLETION
-    # =========================================================================
+    # 1. Per-model results
+    model_file = os.path.join(output_dir, "per_model_results.csv")
+    model_cols = ['binding_model', 'species', 'ensemble',
+                  'binding_affinity_orig', 'ppsscore_orig',
+                  'lig_rmsd_orig', 'plif_tanimoto_orig',
+                  'confidence_level', 'n_metrics_pass',
+                  'ba_pass', 'pps_pass', 'rmsd_pass', 'plif_pass',
+                  'PCA1', 'PCA2']
+    
+    df[model_cols].to_csv(model_file, index=False, float_format='%.4f')
+    print(f"\n✓ Per-model results: {model_file}")
+    
+    # 2. Species summary
+    species_file = os.path.join(output_dir, "species_summary.csv")
+    species_summary.to_csv(species_file, index=False)
+    print(f"✓ Species summary: {species_file}")
+    
+    # 3. Outliers
+    if len(outlier_info) > 0:
+        outlier_file = os.path.join(output_dir, "outliers_removed.csv")
+        pd.DataFrame(outlier_info).to_csv(outlier_file, index=False, float_format='%.4f')
+        print(f"✓ Outliers tracked: {outlier_file} (n={len(outlier_info)})")
+    else:
+        print(f"✓ No outliers to save")
+    
+    # 4. Text summary
+    summary_file = os.path.join(output_dir, "analysis_summary.txt")
+    with open(summary_file, 'w', encoding='utf-8') as f:
+        f.write("="*70 + "\n")
+        f.write("SPECIES SUSCEPTIBILITY ASSESSMENT - ANALYSIS SUMMARY\n")
+        f.write("="*70 + "\n\n")
+        
+        f.write("METHODOLOGY\n")
+        f.write("-"*70 + "\n")
+        f.write("1. Reference-only standardization\n")
+        f.write("2. Species-specific outlier removal (Mahalanobis distance)\n")
+        f.write("3. Ensemble-level confidence scoring\n")
+        f.write("4. PCA visualization\n\n")
+        
+        f.write("DATA SUMMARY\n")
+        f.write("-"*70 + "\n")
+        f.write(f"Total models: {len(df)}\n")
+        f.write(f"Outliers removed: {len(df) - len(cleaned_indices)}\n")
+        f.write(f"Models analyzed: {len(cleaned_indices)}\n")
+        f.write(f"Species: {df['species'].nunique()}\n\n")
+        
+        f.write("THRESHOLDS\n")
+        f.write("-"*70 + "\n")
+        if use_permissive:
+            f.write(f"Type: permissive (±{permissive_factor} SD from reference)\n\n")
+        else:
+            f.write("Type: Hard\n\n")
+        
+        for metric, thresh in thresholds.items():
+            f.write(f"  {metric}: {thresh:.3f}\n")
+        
+        f.write("\n\nCONFIDENCE CRITERIA\n")
+        f.write("-"*70 + "\n")
+        f.write("Strong: 3-4 metrics pass thresholds\n")
+        f.write("Moderate: 2 metrics pass thresholds\n")
+        f.write("Weak: 0-1 metrics pass thresholds\n\n")
+        
+        f.write("SPECIES RESULTS\n")
+        f.write("="*70 + "\n\n")
+        
+        # Sort by confidence
+        species_sorted = species_summary.sort_values(
+            by='species_confidence',
+            key=lambda x: x.map({'Strong': 0, 'Moderate': 1, 'Weak': 2})
+        )
+        
+        for _, row in species_sorted.iterrows():
+            f.write(f"{row['species']}: {row['species_confidence'].upper()}\n")
+            f.write(f"  Ensembles: {row['n_ensembles']}\n")
+            f.write(f"  Best: Ensemble {row['best_ensemble']} "
+                   f"({row['best_n_metrics_pass']}/4 metrics)\n")
+            f.write(f"  Distribution: Strong={row['strong_count']}, "
+                   f"Moderate={row['moderate_count']}, "
+                   f"Weak={row['weak_count']}\n\n")
+    
+    print(f"✓ Analysis summary: {summary_file}")
+
+
+# ============================================================================
+# MAIN EXECUTION
+# ============================================================================
+
+def main():
+    """
+    Main execution function for susceptibility assessment.
+    """
+    print("\n" + "="*70)
+    print("CROSS-SPECIES SUSCEPTIBILITY ASSESSMENT")
+    print("="*70)
+    
+    # Get input file
+    file_path = input("\nEnter CSV summary file path: ").strip().replace('"', '')
+    
+    if not os.path.exists(file_path):
+        print(f"\n✗ Error: File not found: {file_path}")
+        return
+    
+    output_dir = os.path.dirname(file_path) if os.path.dirname(file_path) else '.'
+    
+    # STEP 1: Load data and identify reference
+    df_temp = pd.read_csv(file_path)
+    ref_species = get_reference_species(df_temp)
+    
+    df, scaler, metric_cols = load_and_preprocess_data(file_path, ref_species)
+    
+    # STEP 2: Remove outliers
+    cleaned_indices, outlier_info = remove_outliers_by_species(df, metric_cols)
+    
+    # Get reference data for permissive thresholding
+    ref_mask = (df['species'] == ref_species) & df.index.isin(cleaned_indices)
+    ref_data_orig = df.loc[ref_mask]
+    
+    # STEP 3: Get threshold configuration
+    thresholds, use_permissive, permissive_factor = get_threshold_configuration()
+    
+    # STEP 4-5: Evaluate confidence
+    df = evaluate_ensemble_confidence(
+        df, thresholds, use_permissive, permissive_factor, ref_data_orig, cleaned_indices
+    )
+    
+    species_summary = calculate_species_summary(df, cleaned_indices)
+    
+    # STEP 6: Generate PCA visualization
+    df = generate_pca_visualization(
+        df, metric_cols, ref_species, species_summary, output_dir, cleaned_indices
+    )
+    
+    # STEP 7: Save all results
+    save_results(
+        df, species_summary, outlier_info, thresholds,
+        use_permissive, permissive_factor, output_dir, cleaned_indices
+    )
+    
     print("\n" + "="*70)
     print("ANALYSIS COMPLETE")
     print("="*70)
-    print(f"\nAll results have been saved to: {output_dir}")
+    print(f"\nResults saved to: {output_dir}")
     print("\nGenerated files:")
-    print("  - correlation_plot.png")
-    print("  - pca_projection_centroid.png")
-    print("  - all_models_assessment.csv")
-    print("  - species_susceptibility_summary.csv")
-    print("  - susceptibility_list.txt")
+    print("  - pca_plot.png")
+    print("  - per_model_results.csv")
+    print("  - species_summary.csv")
+    if len(outlier_info) > 0:
+        print("  - outliers_removed.csv")
+    print("  - analysis_summary.txt")
 
 
 if __name__ == "__main__":
