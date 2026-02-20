@@ -1,3 +1,23 @@
+"""
+mds_structure_prep.py
+=============================
+Prepares the test and reference structure for molecular dynamics simulation and flexibility analysis. 
+It performs the following steps:
+1. Runs PDBFixer to clean up the structure, add missing atoms, and ensure it's suitable for MD.
+2. Identifies binding pocket residues based on proximity to the ligand (in reference structure).
+3. Runs a short MD simulation to equilibrate the structure and generate a trajectory.
+4. Analyzes the trajectory to calculate RMSF (Root Mean Square Fluctuation) for each residue, 
+   identifying which residues are flexible based on a defined threshold.
+5. Optionally extracts multiple structures from the equilibrated plateau region to create an ensemble.
+
+Outputs
+-------
+- Fixed PDB files for test and reference structures (protein only for MD, with ligand for reference)
+- RMSF plots showing residue flexibility with flexible residues highlighted
+- A summary file listing flexible residues for each structure
+- Extracted ensemble structures from the plateau region (if enabled)
+"""
+
 import os
 import shutil
 import time
