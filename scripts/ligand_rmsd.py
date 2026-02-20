@@ -32,9 +32,23 @@ def ligand_rmsd():
     # Change the working directory
     os.chdir(pdb_dir)
 
+    # Search up to 3 parent levels for a 'details' subdirectory
+    output_dir = pdb_dir  # default fallback
+    search_path = pdb_dir
+    for level in range(4):  # 0 = current dir, 1-3 = parent levels
+        details_candidate = os.path.join(search_path, "details")
+        if os.path.isdir(details_candidate):
+            output_dir = details_candidate
+            print(f"Found 'details' directory at: {details_candidate}")
+            break
+        search_path = os.path.dirname(search_path)
+    else:
+        print("No 'details' directory found within 3 parent levels. Saving to working directory.")
+
     # Search the directory for a file that starts with "ref_"
     ref_pdb = ""
     pdb_files = [i for i in os.listdir(pdb_dir) if i.endswith(".pdb")]
+    ref = "n"
     for file in pdb_files:
         if file.startswith("ref_"):
             ref = input("Is {} the reference PDB file? (y/n): ".format(file))
@@ -171,7 +185,7 @@ def ligand_rmsd():
         rmsd_dict[base] = round(rmsd, 3)
 
     # Write the RMSD values to a file
-    with open("ligand_rmsd.txt", "w") as f:
+    with open(os.path.join(output_dir, "ligand_rmsd.txt"), "w") as f:
         # Add a title line
         f.write("Ligand RMSD values\n" + "\n")
         # Add the RMSD values for each PDB file
@@ -179,19 +193,19 @@ def ligand_rmsd():
             f.write("%s: %s\n" % (pdb2, rmsd))
 
     # Remove the quotes from the text file and the spaces between the residue name and commas
-    with open("ligand_rmsd.txt", "r") as f:
+    rmsd_txt_path = os.path.join(output_dir, "ligand_rmsd.txt")
+    with open(rmsd_txt_path, "r") as f:
         lines = f.readlines()
-    with open("ligand_rmsd.txt", "w") as f:
+    with open(os.path.join(output_dir, "ligand_rmsd.txt"), "w") as f:
         for line in lines:
             line = line.replace("'", "")
             line = line.replace(", ", ",")
             f.write(line)
 
     # Check that the text file was created
-    if os.path.exists("ligand_rmsd.txt"):
+    if os.path.exists(rmsd_txt_path):
         print(
-            "The ligand RMSD values were written to ligand_rmsd.txt "
-            "in your working directory."
+            "The ligand RMSD values were written to {}.".format(rmsd_txt_path)
         )
 
     # Plot the RMSD values as a histogram
@@ -206,7 +220,7 @@ def ligand_rmsd():
         patch.set_facecolor("#A4D4F7")
         patch.set_edgecolor("black")
     plt.tight_layout()
-    plt.savefig("ligand_rmsd.png", dpi=300)
+    plt.savefig(os.path.join(output_dir, "ligand_rmsd.png"), dpi=300)
     plt.show()
 
 if __name__ == "__main__":
