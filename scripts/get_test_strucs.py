@@ -60,8 +60,19 @@ def get_json(url, params=None, retries=3):
 def prompt_for_inputs():
     """Collect and validate a UniProt accession and optional taxon level."""
     print("\n============================================================")
-    print("  Ortholog Discovery + AlphaFold Structure Pipeline")
+    print("  Ortholog Discovery + AlphaFold Structure Retrieval")
     print("============================================================")
+    cwd = input(f"\nPlease enter an output directory for downloaded structures:")
+    if cwd.strip():
+        global OUTPUT_DIR, AF_STRUCT_DIR, ORTHODB_CSV, ALPHAFOLD_CSV
+        OUTPUT_DIR = Path(cwd.strip())
+        AF_STRUCT_DIR = OUTPUT_DIR / "af_structures"
+        ORTHODB_CSV = OUTPUT_DIR / "orthodb_orthologs.csv"
+        ALPHAFOLD_CSV = OUTPUT_DIR / "alphafold_metadata.csv"
+        print(f"  Outputs will be saved to: {OUTPUT_DIR.resolve()}")
+    else:
+        print(f"  Using current directory for outputs: {OUTPUT_DIR.resolve()}")
+    
     uid = ""
     while not uid:
         uid = input(
