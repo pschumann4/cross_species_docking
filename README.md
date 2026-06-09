@@ -134,7 +134,7 @@ This outputs a CSV of matching PDB entries with metadata including resolution. S
 
 A set of species-specific receptor structures is required for cross-species comparison. For a stronger weight of evidence, the [SeqAPASS tool](https://seqapass.epa.gov/seqapass/) (Level 4, I-TASSER homology modeling) is recommended.
 
-Alternatively, use `get_test_strucs.py` to automatically download AlphaFold structural predictions for a diverse set of species. You will need the UniProt ID for your reference protein (e.g., `P10275` for human androgen receptor). The script queries OrthoDB to identify orthologs, resolves their UniProt IDs, and downloads available AlphaFold structures along with associated metadata:
+Alternatively, use `get_test_strucs.py` to automatically download AlphaFold structural predictions for a diverse set of species. You will need the UniProt ID for your reference protein (e.g., `P10275` for human androgen receptor). The script queries [OrthoDB](https://www.orthodb.org/) to identify orthologs, resolves their UniProt IDs, and downloads available AlphaFold structures along with associated metadata:
 
 ```
 python get_test_strucs.py
@@ -254,19 +254,7 @@ Outputs:
 
 ---
 
-### Step 8: Calculate ligand RMSD (optional)
-
-**This step is optional.** Ligand RMSD values are computed automatically during Step 7 and stored in `results/docking_scores.csv`. Running `ligand_rmsd.py` is only necessary if you want the RMSD histogram (`ligand_rmsd.png`):
-
-```
-python ligand_rmsd.py
-```
-
-The script reads model PDB files from `docking_results/models/` (resolved from the project config) and writes `ligand_rmsd.txt` and `ligand_rmsd.png` to `results/`.
-
----
-
-### Step 9: Calculate binding pocket similarity scores
+### Step 8: Calculate binding pocket similarity scores
 
 Run `run_ppsalign.py` to extract binding pocket structures from each docked complex and compute PPS-scores (binding pocket similarity scores) relative to the reference using PPSalign:
 
@@ -278,7 +266,7 @@ The models directory is resolved automatically from the project config. Output i
 
 ---
 
-### Step 10: Calculate protein-ligand interaction fingerprints (PLIFs)
+### Step 9: Calculate protein-ligand interaction fingerprints (PLIFs)
 
 Run `plip_plif.py` to identify protein-ligand interactions and compute PLIF Tanimoto similarity scores. This uses the [PLIP tool](https://plip-tool.biotec.tu-dresden.de/plip-web/plip/index) to detect hydrogen bonds, hydrophobic contacts, and other interaction types, and a custom distance-based algorithm to detect van der Waals interactions. A PLIF is generated for each docked model, and Tanimoto similarity to the reference structure PLIF is calculated:
 
@@ -290,7 +278,7 @@ The models directory is resolved from the project config. The PLIF Tanimoto summ
 
 ---
 
-### Step 11: Generate summary report
+### Step 10: Generate summary report
 
 Run `get_summary.py` to consolidate all docking metrics into a single summary file:
 
@@ -307,7 +295,7 @@ Output: `results/<ligand>_summary.csv`. This file is the sole input to the final
 
 ---
 
-### Step 12: Perform susceptibility analysis
+### Step 11: Perform susceptibility analysis
 
 Run `susceptibility_analysis.py` using the summary report generated in the previous step:
 
@@ -347,6 +335,6 @@ Species are ranked by Mahalanobis distance from the reference species centroid i
 
 **Permissive thresholding**
 
-An optional permissive thresholding mode is available, in which the default threshold values are relaxed based on the observed variability within the reference species ensemble. This approach is intended for situations where reference variability is high enough that default thresholds may produce false negatives — that is, where failing a threshold may reflect reference-level noise rather than a genuine difference in binding. Note that in the context of environmental risk assessment, conservatism means erring toward predicting susceptibility rather than away from it. Permissive thresholding should only be applied when there is specific scientific justification for doing so, as it increases the risk of false positives.
+An optional permissive thresholding mode is available, in which the default threshold values are relaxed based on the observed variability within the reference species ensemble. This approach is intended for situations where reference variability is considered high enough that the default thresholds may produce false negatives — that is, where failing a threshold may reflect reference-level noise rather than a genuine difference in binding. It's recommended that permissive thresholding is applied only when there is justification for doing so, as it increases the risk of false positives.
 
 ---
