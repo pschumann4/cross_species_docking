@@ -19,37 +19,13 @@ import shutil
 import subprocess
 import numpy as np
 from pathlib import Path
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from utils import euclidean3d, centroid, check_tools
 
 
 # ============================================================================
 # BINDING POCKET EXTRACTION FUNCTIONS (from get_pocket.py)
 # ============================================================================
-
-def euclidean3d(v1, v2):
-    """
-    Faster implementation of euclidean distance for the 3D case.
-    """
-    if not len(v1) == 3 and len(v2) == 3:
-        return None
-    return np.sqrt((v1[0] - v2[0]) ** 2 + (v1[1] - v2[1]) ** 2 + (v1[2] - v2[2]) ** 2)
-
-
-def centroid(coo):
-    """
-    Calculates the centroid from a 3D point cloud and returns the coordinates.
-    
-    Parameters:
-        coo: Array of coordinate arrays
-    
-    Returns:
-        centroid coordinates as list
-    """
-    return list(
-        map(
-            np.mean,
-            (([c[0] for c in coo]), ([c[1] for c in coo]), ([c[2] for c in coo])),
-        )
-    )
 
 
 def min_dist(pdb_file, ligand):
@@ -369,7 +345,7 @@ def run_ppsalign(query_poc, template_poc, output_file):
         return False
 
 
-def compare_pockets_to_reference(poc_dir, template_poc, output_subdir="PPS_files", verbose=True):
+def compare_pockets_to_reference(poc_dir, template_poc, output_subdir="PPS_files", output_dir=None, verbose=True):
     """
     Compare all binding pockets in a directory to a reference pocket.
     
@@ -386,12 +362,12 @@ def compare_pockets_to_reference(poc_dir, template_poc, output_subdir="PPS_files
     Returns:
         Dictionary mapping base filenames to output file paths
     """
-    # Create output directory
-    output_dir = os.path.join(poc_dir, output_subdir)
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
-        if verbose:
-            print(f"Created output directory: {output_dir}")
+    # Create output directory (caller can override via output_dir)
+    if output_dir is None:
+        output_dir = os.path.join(poc_dir, output_subdir)
+    os.makedirs(output_dir, exist_ok=True)
+    if verbose:
+        print(f"PPS output directory: {output_dir}")
     
     # Get template path
     template_path = os.path.join(poc_dir, template_poc)
@@ -475,7 +451,7 @@ def identify_reference_pocket(poc_files, auto_detect=True):
             print("Please enter a number.")
 
 
-def run_integrated_workflow(pdb_dir, ligand, verbose=True):
+def run_integrated_workflow(pdb_dir, ligand, details_dir=None, verbose=True):
     """
     Complete integrated workflow: pocket extraction → structural alignment.
     
@@ -527,9 +503,11 @@ def run_integrated_workflow(pdb_dir, ligand, verbose=True):
         print("RUNNING PPSALIGN COMPARISONS")
         print("=" * 70)
     
-    pps_results = compare_pockets_to_reference(poc_dir, template_poc, verbose=verbose)
-    
+    pps_output_dir = os.path.join(details_dir, "PPS_files") if details_dir else None
+    pps_results = compare_pockets_to_reference(poc_dir, template_poc, output_dir=pps_output_dir, verbose=verbose)
+
     # Summary
+    results_location = pps_output_dir if pps_output_dir else os.path.join(poc_dir, "PPS_files")
     if verbose:
         print("\n" + "=" * 70)
         print("WORKFLOW COMPLETE")
@@ -537,7 +515,7 @@ def run_integrated_workflow(pdb_dir, ligand, verbose=True):
         print(f"\nExtracted pockets: {len(pocket_files)}")
         print(f"Reference structure: {template_poc}")
         print(f"PPS comparisons completed: {len(pps_results)}")
-        print(f"\nResults location: {os.path.join(poc_dir, 'PPS_files')}")
+        print(f"\nResults location: {results_location}")
     
     return {
         'pocket_files': pocket_files,
@@ -554,24 +532,42 @@ def main():
     """
     Command line interface for the integrated workflow.
     """
+    check_tools(["PPSalign"])
     print("\n" + "=" * 70)
     print("BINDING POCKET EXTRACTION AND STRUCTURAL ALIGNMENT")
     print("=" * 70)
-    
-    # Get input directory
-    while True:
-        pdb_dir = input("Enter the directory containing PDB files: ").strip()
-        if os.path.exists(pdb_dir) and os.path.isdir(pdb_dir):
-            break
-        print(f"Directory '{pdb_dir}' not found. Please try again.")
-    
-    # Get ligand name
-    ligand = input("Enter the ligand ID (3-letter code from PDB): ").strip()
-    
+
+    from utils import resolve_project_dir, load_config, get_project_paths
+
+    project_dir = resolve_project_dir()
+    config = load_config(project_dir)
+    paths = get_project_paths(project_dir)
+
+    # ── Models directory ──────────────────────────────────────────────────────
+    pdb_dir = paths["models"]
+    if not os.path.isdir(pdb_dir):
+        print(f"\nWarning: models/ not found at {pdb_dir}")
+        while True:
+            pdb_dir = input("Enter the directory containing PDB files: ").strip().strip('"')
+            if os.path.isdir(pdb_dir):
+                break
+            print(f"Directory '{pdb_dir}' not found. Please try again.")
+    else:
+        print(f"\nUsing models directory: {pdb_dir}")
+
+    # ── Ligand residue name ───────────────────────────────────────────────────
+    ligand = config.get("ligand_resname")
+    if ligand:
+        print(f"Using ligand ID from config: {ligand}")
+    else:
+        ligand = input("Enter the ligand ID (3-letter code from PDB): ").strip()
+
     # Run workflow
+    os.makedirs(paths["results"], exist_ok=True)
     results = run_integrated_workflow(
         pdb_dir=pdb_dir,
         ligand=ligand,
+        details_dir=paths["results"],
         verbose=True
     )
 

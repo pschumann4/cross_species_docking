@@ -11,30 +11,17 @@ Workflow:
 """
 
 import os
+import sys
 import shutil
 import subprocess
 import xml.etree.ElementTree as ET
 import numpy as np
 import pandas as pd
-import rdkit
-from rdkit import DataStructs
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from utils import euclidean3d, check_tools
 
 
-def euclidean3d(v1, v2):
-    """
-    Calculate euclidean distance for 3D coordinates.
-    
-    This is used for Van der Waals contact detection, where we need to identify
-    protein-ligand atom pairs within a distance threshold based on their combined
-    VDW radii. The explicit distance calculation allows us to filter interactions
-    that PLIP might miss, particularly weak VDW contacts.
-    """
-    if not len(v1) == 3 and len(v2) == 3:
-        return None
-    return np.sqrt((v1[0] - v2[0]) ** 2 + (v1[1] - v2[1]) ** 2 + (v1[2] - v2[2]) ** 2)
-
-
-def run_plip_analysis(dir_path):
+def run_plip_analysis(dir_path, results_dir=None):
     """
     Run PLIP on all PDB files in the specified directory and organize results.
     
@@ -94,10 +81,10 @@ def run_plip_analysis(dir_path):
             capture_output=True
         )
     
-    # Create and organize results directory
-    results_dir = os.path.join(dir_path, "PLIP_results")
-    if not os.path.exists(results_dir):
-        os.makedirs(results_dir)
+    # Create and organize results directory (caller can override via results_dir)
+    if results_dir is None:
+        results_dir = os.path.join(dir_path, "PLIP_results")
+    os.makedirs(results_dir, exist_ok=True)
     
     print("\nOrganizing files into PLIP_results directory...")
     
@@ -139,7 +126,18 @@ def parse_plip_xml(xml_file):
     root = tree.getroot()
     data = []
     
+    # Try both capitalisation variants emitted by different PLIP versions,
+    # then fall back to scanning all binding sites.
+    # Explicit `is not None` checks are required — Element truth-testing is deprecated.
     binding_site = root.find('bindingsite[@id="1"][@has_interactions="True"]')
+    if binding_site is None:
+        binding_site = root.find('bindingsite[@id="1"][@has_interactions="true"]')
+    if binding_site is None:
+        binding_site = next(
+            (bs for bs in root.findall("bindingsite")
+             if bs.get("has_interactions", "").lower() == "true"),
+            None,
+        )
     if binding_site is not None:
         interactions = binding_site.find("interactions")
         
@@ -186,7 +184,7 @@ def get_vdw_contacts(pdb_file, ligand_name):
     Returns:
     --------
     DataFrame
-        Van der Waals contacts with residue number, type, and interaction type
+        van der Waals contacts with residue number, type, and interaction type
     
     Methodology:
     -----------
@@ -213,7 +211,7 @@ def get_vdw_contacts(pdb_file, ligand_name):
                 y = float(line[38:46].strip())
                 z = float(line[46:54].strip())
                 protein_coordinates.append([atom, resnr, restype, x, y, z])
-            elif line.startswith("HETATM") and ligand_name in line:
+            elif line.startswith("HETATM") and line[17:20].strip() == ligand_name:
                 atom = line[12:16].strip()[0]
                 x = float(line[30:38].strip())
                 y = float(line[38:46].strip())
@@ -279,59 +277,76 @@ def merge_plifs(ref_df, test_df):
     
     Methodology:
     -----------
-    The outer merge creates a union of all interactions seen in either structure,
-    allowing us to identify both shared and unique interactions. This is critical
-    for cross-species analysis because we need to know:
-    1. Which interactions are conserved (present in both)
-    2. Which are lost in the test species (only in reference)
-    3. Which are gained in the test species (only in test)
-    
-    The binary encoding (0/1 for absent/present) enables Tanimoto similarity
-    calculation, which properly accounts for both presence and absence of features.
+    Matching key: restype + interaction_type (NOT resnr).
+
+    In a cross-species pipeline each receptor has its own native residue
+    numbering, so a conserved binding residue (e.g. LEU in the androgen
+    receptor binding pocket) will have a different sequence number in every
+    species.  Merging on residue number would therefore never find a match and
+    would always produce Tanimoto = 0.
+
+    By collapsing to unique (restype, interaction_type) pairs before merging,
+    we ask the biologically meaningful question: "does this species form a
+    hydrogen bond with a THR residue?" rather than "does residue 710 form a
+    hydrogen bond?".  This is the standard approach for cross-species PLIF
+    comparison.
+
+    Rows in the output retain the reference residue number (resnr) for display
+    purposes so the output file can still be used to trace interactions back to
+    specific positions in the reference structure.
     """
-    ref_copy = ref_df.copy().rename(columns={
-        "resnr": "resnr_ref",
-        "restype": "restype_ref",
-        "interaction_type": "interaction_type_ref"
-    })
-    
-    test_copy = test_df.copy().rename(columns={
-        "resnr": "resnr_test",
-        "restype": "restype_test",
-        "interaction_type": "interaction_type_test"
-    })
-    
-    # Merge on matching interactions
-    merged_df = pd.merge(
-        ref_copy,
-        test_copy,
-        left_on=["resnr_ref", "restype_ref", "interaction_type_ref"],
-        right_on=["resnr_test", "restype_test", "interaction_type_test"],
-        how="outer"
+    # Collapse to one row per (restype, interaction_type) per structure.
+    # If multiple same-type residues make the same interaction class, only the
+    # first occurrence is kept — each feature is counted once (binary).
+    ref_uniq = (
+        ref_df
+        .drop_duplicates(subset=["restype", "interaction_type"], keep="first")
+        .rename(columns={
+            "resnr": "resnr_ref",
+            "restype": "restype_ref",
+            "interaction_type": "interaction_type_ref",
+        })
     )
-    
-    # Create binary columns for presence in ref and test
+
+    test_uniq = (
+        test_df
+        .drop_duplicates(subset=["restype", "interaction_type"], keep="first")
+        .rename(columns={
+            "resnr": "resnr_test",
+            "restype": "restype_test",
+            "interaction_type": "interaction_type_test",
+        })
+    )
+
+    merged_df = pd.merge(
+        ref_uniq,
+        test_uniq,
+        left_on=["restype_ref", "interaction_type_ref"],
+        right_on=["restype_test", "interaction_type_test"],
+        how="outer",
+    )
+
+    # Binary presence flags — set before any fillna so NaN correctly signals absence
     merged_df = merged_df.assign(
         ref=merged_df["resnr_ref"].notnull().astype(int),
-        test=merged_df["resnr_test"].notnull().astype(int)
+        test=merged_df["resnr_test"].notnull().astype(int),
     )
-    
-    # Fill missing values and clean up
+
+    # Fill display columns from whichever side has data
     merged_df["resnr_ref"] = merged_df["resnr_ref"].fillna(merged_df["resnr_test"])
     merged_df["restype_ref"] = merged_df["restype_ref"].fillna(merged_df["restype_test"])
     merged_df["interaction_type_ref"] = merged_df["interaction_type_ref"].fillna(
         merged_df["interaction_type_test"]
     )
-    
-    # Final DataFrame with clean column names
-    result_df = merged_df[["resnr_ref", "restype_ref", "interaction_type_ref", "ref", "test"]].rename(
-        columns={
-            "resnr_ref": "resnr",
-            "restype_ref": "restype",
-            "interaction_type_ref": "interaction"
-        }
-    )
-    
+
+    result_df = merged_df[
+        ["resnr_ref", "restype_ref", "interaction_type_ref", "ref", "test"]
+    ].rename(columns={
+        "resnr_ref": "resnr",
+        "restype_ref": "restype",
+        "interaction_type_ref": "interaction",
+    })
+
     return result_df
 
 
@@ -343,24 +358,233 @@ def calculate_tanimoto(plif_df):
     -----------
     Tanimoto coefficient (also called Jaccard index for binary data) measures
     similarity as: (shared features) / (total unique features)
-    
+
+        Tanimoto = |A ∩ B| / |A ∪ B|
+
     The coefficient ranges from 0 (no overlap) to 1 (perfect match), providing
     an intuitive measure of binding site similarity across species.
+    
     """
-    # Convert binary columns to bit strings
-    bit_string_ref = str(plif_df["ref"].to_numpy())
-    bit_string_test = str(plif_df["test"].to_numpy())
-    
-    # Create RDKit bit vectors
-    plif_ref = rdkit.DataStructs.cDataStructs.CreateFromBitString(bit_string_ref)
-    plif_test = rdkit.DataStructs.cDataStructs.CreateFromBitString(bit_string_test)
-    
-    # Calculate Tanimoto coefficient
-    tanimoto = DataStructs.TanimotoSimilarity(plif_ref, plif_test)
+    both  = int(((plif_df["ref"] == 1) & (plif_df["test"] == 1)).sum())
+    either = int(((plif_df["ref"] == 1) | (plif_df["test"] == 1)).sum())
+    tanimoto = both / either if either > 0 else 0.0
     return round(tanimoto, 3)
 
 
-def generate_plifs(plip_results_dir, ligand_name, ref_pdb=None):
+def generate_heatmap(all_plifs, ref_df, ref_name, output_dir, tanimoto_scores=None):
+    """
+    Generate a binary PLIF heatmap: species on the y-axis, reference binding
+    pocket interactions on the x-axis (top).
+
+    Parameters:
+    -----------
+    all_plifs : dict
+        {pdb_name: merged_plif_df} — one entry per species (best model already
+        selected by the caller)
+    ref_df : DataFrame
+        Reference PLIF (columns: resnr, restype, interaction_type)
+    ref_name : str
+        Display name for the reference structure
+    output_dir : str
+        Directory in which to save plif_heatmap.png
+    """
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        import matplotlib.patches as mpatches
+        from matplotlib.colors import ListedColormap
+    except ImportError:
+        print("  Warning: matplotlib not available — skipping heatmap.")
+        return
+
+    # Keys match the raw PLIP/VDW interaction_type strings in the data
+    itype_colors = {
+        "hydrophobic_interactions": "#df7111",
+        "hydrogen_bonds":           "#2980b9",
+        "water_bridges":            "#00bcd4",
+        "salt_bridges":             "#e74c3c",
+        "pi-stacks":                "#9b59b6",
+        "pi_cation_interactions":   "#f1c40f",
+        "halogen_bonds":            "#27ae60",
+        "metal_complexes":          "#789da0",
+        "vdw_contact":              "#455152",
+    }
+
+    # Human-readable labels for the legend
+    itype_labels = {
+        "hydrophobic_interactions": "Hydrophobic",
+        "hydrogen_bonds":           "Hydrogen bond",
+        "water_bridges":            "Water bridge",
+        "salt_bridges":             "Salt bridge",
+        "pi-stacks":                "Pi-stacking",
+        "pi_cation_interactions":   "Pi-cation interaction",
+        "halogen_bonds":            "Halogen bond",
+        "metal_complexes":          "Metal complex",
+        "vdw_contact":              "van der Waals",
+    }
+
+    # ── Columns: grouped by interaction type, then sorted by residue number ───
+    itype_order = {k: i for i, k in enumerate(itype_colors)}
+    ref_unique = ref_df.drop_duplicates(subset=["resnr", "restype", "interaction_type"])
+    try:
+        ref_sorted = ref_unique.copy()
+        ref_sorted["_itype_order"] = ref_sorted["interaction_type"].map(itype_order).fillna(99)
+        ref_sorted["_resnr_int"] = ref_sorted["resnr"].astype(int)
+        ref_sorted = ref_sorted.sort_values(
+            ["_itype_order", "_resnr_int"]
+        ).drop(columns=["_itype_order", "_resnr_int"]).reset_index(drop=True)
+    except (ValueError, TypeError):
+        ref_sorted = ref_unique.copy()
+        ref_sorted["_itype_order"] = ref_sorted["interaction_type"].map(itype_order).fillna(99)
+        ref_sorted = ref_sorted.sort_values(
+            ["_itype_order", "resnr"]
+        ).drop(columns="_itype_order").reset_index(drop=True)
+
+    col_keys = list(
+        zip(ref_sorted["resnr"], ref_sorted["restype"], ref_sorted["interaction_type"])
+    )
+    col_labels = [
+        f"{resnr}{restype}"
+        for resnr, restype, _ in col_keys
+    ]
+
+    # ── Rows: reference first, then species sorted by Tanimoto (high → low) ───
+    sorted_pdbs = sorted(
+        all_plifs.keys(),
+        key=lambda p: (tanimoto_scores or {}).get(p, 0),
+        reverse=True,
+    )
+    species_labels = [pdb.split("_")[0] for pdb in sorted_pdbs]
+    row_labels = ["Reference"] + species_labels
+
+    matrix = [np.ones(len(col_keys), dtype=int)]  # reference row — always all present
+    for pdb in sorted_pdbs:
+        plif_df = all_plifs[pdb]
+        row = []
+        for _, restype, itype in col_keys:
+            mask = (plif_df["restype"] == restype) & (plif_df["interaction"] == itype)
+            row.append(int(plif_df.loc[mask, "test"].iloc[0]) if mask.any() else 0)
+        matrix.append(row)
+
+    matrix = np.array(matrix)
+    n_rows, n_cols = matrix.shape
+
+    # ── Figure sizing ─────────────────────────────────────────────────────────
+    fig_w = max(14, n_cols * 0.7 + 5)
+    fig_h = max(6,  n_rows * 0.7 + 3)
+
+    fig, ax = plt.subplots(figsize=(fig_w, fig_h))
+
+    cmap = ListedColormap(["#D81B60", "#73B2E9"])  # pink = absent, blue = present
+    ax.imshow(matrix, aspect="auto", cmap=cmap, vmin=0, vmax=1)
+
+    # X-axis on bottom
+    ax.xaxis.set_label_position("bottom")
+    ax.xaxis.tick_bottom()
+    ax.set_xticks(range(n_cols))
+    ax.set_xticklabels(col_labels, rotation=90, ha="center", va="top", fontsize=16)
+    ax.set_xlabel("Binding pocket residue", fontsize=16, labelpad=10)
+
+    # Color each x-axis tick label by its interaction type
+    fig.canvas.draw()
+    for tick, (_, _, itype) in zip(ax.get_xticklabels(), col_keys):
+        tick.set_color(itype_colors.get(itype, "black"))
+
+    # Y-axis (left)
+    ax.set_yticks(range(n_rows))
+    ax.set_yticklabels(row_labels, fontsize=16)
+    ax.set_ylabel("Species", fontsize=16, labelpad=10)
+
+    # Grid
+    ax.set_xticks(np.arange(-0.5, n_cols, 1), minor=True)
+    ax.set_yticks(np.arange(-0.5, n_rows, 1), minor=True)
+    ax.grid(which="minor", color="white", linewidth=0.8)
+    ax.tick_params(which="minor", size=0)
+
+    # ── Colored column-group borders by interaction type ──────────────────────
+    # Identify contiguous runs of the same interaction type
+    col_groups = []
+    if col_keys:
+        cur_itype = col_keys[0][2]
+        cur_start = 0
+        for i, (_, _, itype) in enumerate(col_keys[1:], 1):
+            if itype != cur_itype:
+                col_groups.append((cur_start, i - 1, cur_itype))
+                cur_itype = itype
+                cur_start = i
+        col_groups.append((cur_start, len(col_keys) - 1, cur_itype))
+
+    for grp_start, grp_end, grp_itype in col_groups:
+        ax.add_patch(mpatches.Rectangle(
+            (grp_start - 0.5, -0.5),
+            grp_end - grp_start + 1,
+            n_rows,
+            linewidth=5,
+            edgecolor=itype_colors.get(grp_itype, "black"),
+            facecolor="none",
+            zorder=4,
+            clip_on=False,
+        ))
+
+    # Separator after reference row
+    ax.axhline(y=0.5, color="black", linewidth=2)
+
+    # ── Right y-axis: Tanimoto scores ─────────────────────────────────────────
+    if tanimoto_scores:
+        tanimoto_labels = ["—"] + [
+            f"{tanimoto_scores.get(pdb, ''):.3f}" for pdb in sorted_pdbs
+        ]
+        ax2 = ax.twinx()
+        ax2.set_ylim(ax.get_ylim())
+        ax2.set_yticks(range(n_rows))
+        ax2.set_yticklabels(tanimoto_labels, fontsize=16)
+        ax2.set_ylabel("Tanimoto similarity", fontsize=16, labelpad=10)
+        ax2.tick_params(axis="y", length=0)
+
+    # ── Legends (stacked, shifted right to clear the Tanimoto axis) ──────────
+    # Legend 1: presence / absence
+    seen_itypes = dict.fromkeys(itype for _, _, itype in col_keys)
+    itype_handles = [
+        mpatches.Patch(
+            color=itype_colors.get(itype, "black"),
+            label=itype_labels.get(itype, itype.replace("_", " ")),
+        )
+        for itype in seen_itypes
+    ]
+    presence_legend = ax.legend(
+        handles=[
+            mpatches.Patch(color="#73B2E9", label="Present"),
+            mpatches.Patch(color="#D81B60", label="Absent"),
+        ],
+        loc="upper left",
+        bbox_to_anchor=(1.06, 1.0),
+        frameon=False,
+        fontsize=14,
+        title="Interaction",
+        title_fontsize=16,
+    )
+    ax.add_artist(presence_legend)
+
+    # Legend 2: interaction type colors
+    ax.legend(
+        handles=itype_handles,
+        loc="upper left",
+        bbox_to_anchor=(1.06, 0.78),
+        frameon=False,
+        fontsize=14,
+        title="Interaction type",
+        title_fontsize=16,
+    )
+
+    plt.tight_layout()
+    out_path = os.path.join(output_dir, "plif_heatmap.png")
+    plt.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close()
+    print(f"\nHeatmap saved to: {out_path}")
+
+
+def generate_plifs(plip_results_dir, ligand_name, ref_pdb=None, summary_dir=None):
     """
     Generate PLIFs for all test structures compared to reference.
     
@@ -395,17 +619,15 @@ def generate_plifs(plip_results_dir, ligand_name, ref_pdb=None):
         pdb_files = [i for i in os.listdir(plip_results_dir) 
                      if i.endswith("_protonated.pdb")]
         
-        # Try to auto-detect reference file
+        # Auto-detect reference file by "ref_" prefix
         ref_candidates = [f for f in pdb_files if f.startswith("ref_")]
-        
+
         if len(ref_candidates) == 1:
-            ref = input(f"\nIs {ref_candidates[0]} the reference PDB file? (y/n): ")
-            ref = ref.lower()
-            while ref not in ["y", "n"]:
-                ref = input("Please enter y or n: ")
-            if ref == "y":
-                ref_pdb = ref_candidates[0]
-        
+            ref_pdb = ref_candidates[0]
+            print(f"\nAuto-detected reference PDB: {ref_pdb}")
+        elif len(ref_candidates) > 1:
+            print(f"\nMultiple ref_ files found: {ref_candidates}")
+
         if ref_pdb is None:
             print("\nAvailable protonated PDB files:")
             for i, file in enumerate(pdb_files, 1):
@@ -430,8 +652,8 @@ def generate_plifs(plip_results_dir, ligand_name, ref_pdb=None):
     print(f"Parsing PLIP XML report for {ref_pdb_name}...")
     ref_plip_df = parse_plip_xml(ref_xml)
     
-    # Get reference Van der Waals contacts
-    print(f"Calculating Van der Waals contacts for {ref_pdb_name}...")
+    # Get reference van der Waals contacts
+    print(f"Calculating van der Waals contacts for {ref_pdb_name}...")
     ref_vdw_df = get_vdw_contacts(ref_pdb, ligand_name)
     
     # Combine reference PLIP and VDW data
@@ -443,10 +665,11 @@ def generate_plifs(plip_results_dir, ligand_name, ref_pdb=None):
     
     print("\nProcessing test structures...")
     print("=" * 70)
-    
+
     # Process all test structures
     results = []
-    
+    all_plifs = {}  # {species_name: merged_plif_df} — used for heatmap
+
     for pdb in os.listdir(plip_results_dir):
         if pdb.endswith("_protonated.pdb") and pdb != ref_pdb:
             pdb_name = pdb.replace("_protonated.pdb", "")
@@ -457,7 +680,7 @@ def generate_plifs(plip_results_dir, ligand_name, ref_pdb=None):
             # Parse test PLIP data
             test_plip_df = parse_plip_xml(xml)
             
-            # Get test Van der Waals contacts
+            # Get test van der Waals contacts
             test_vdw_df = get_vdw_contacts(pdb, ligand_name)
             
             # Combine test PLIP and VDW data
@@ -469,7 +692,8 @@ def generate_plifs(plip_results_dir, ligand_name, ref_pdb=None):
             
             # Merge reference and test PLIFs
             merged_plif = merge_plifs(ref_df, test_df)
-            
+            all_plifs[pdb_name] = merged_plif
+
             # Calculate Tanimoto coefficient
             tanimoto = calculate_tanimoto(merged_plif)
             
@@ -498,32 +722,50 @@ def generate_plifs(plip_results_dir, ligand_name, ref_pdb=None):
     results_df = pd.DataFrame(results)
     results_df = results_df.sort_values("tanimoto_similarity", ascending=False)
     
-    # Save summary table
-    summary_file = "plif_similarity_summary.csv"
-    results_df.to_csv(summary_file, index=False)
-    
-    print(f"\nSummary table saved to: {summary_file}")
-    
-    # Organize output files
+    # Save summary table — to results/ if provided, otherwise alongside PLIF_files
+    summary_dest = summary_dir if summary_dir else plip_results_dir
+    os.makedirs(summary_dest, exist_ok=True)
+    summary_path = os.path.join(summary_dest, "plif_similarity_summary.csv")
+    results_df.to_csv(summary_path, index=False)
+    print(f"\nSummary table saved to: {summary_path}")
+
+    # Generate heatmap — one row per species, keeping the best-Tanimoto model
+    if all_plifs:
+        best_by_species = {}
+        for entry in results:
+            species = entry["test_structure"].split("_")[0]
+            if (species not in best_by_species or
+                    entry["tanimoto_similarity"] > best_by_species[species]["tanimoto_similarity"]):
+                best_by_species[species] = entry
+        best_plifs = {
+            e["test_structure"]: all_plifs[e["test_structure"]]
+            for e in best_by_species.values()
+        }
+        tanimoto_scores = {
+            e["test_structure"]: e["tanimoto_similarity"]
+            for e in best_by_species.values()
+        }
+        generate_heatmap(best_plifs, ref_df, ref_pdb_name, summary_dest, tanimoto_scores)
+
+    # Organize per-comparison PLIF text files into PLIF_files/
     print("\n" + "=" * 70)
     print("Organizing output files...")
     print("=" * 70)
-    
+
     output_dir = os.path.join(plip_results_dir, "PLIF_files")
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
-    
-    # Move PLIF files to output directory
+    os.makedirs(output_dir, exist_ok=True)
+
     files_moved = 0
     for file in os.listdir(plip_results_dir):
-        if file.endswith("_PLIF.txt") or file == summary_file:
+        if file.endswith("_PLIF.txt"):   # summary CSV is already saved separately
             try:
-                shutil.move(file, os.path.join(output_dir, file))
+                shutil.move(os.path.join(plip_results_dir, file),
+                            os.path.join(output_dir, file))
                 files_moved += 1
             except shutil.Error:
-                print(f"  Warning: {file} already exists in output directory")
-    
-    print(f"Moved {files_moved} files to PLIF_files folder")
+                print(f"  Warning: {file} already exists in PLIF_files/")
+
+    print(f"Moved {files_moved} PLIF file(s) to PLIF_files/")
     
     return results_df
 
@@ -549,6 +791,7 @@ def main():
     - Ensures all intermediate files are properly organized
     - Allows for error handling across the entire pipeline
     """
+    check_tools(["plip", "obabel"])
     print("\n" + "=" * 70)
     print("PLIP ANALYSIS AND PLIF GENERATION PIPELINE")
     print("=" * 70)
@@ -558,21 +801,41 @@ def main():
     print("3. Compare all test structures against the reference structure")
     print("4. Calculate Tanimoto similarity coefficients")
     print("5. Create organized output files for analysis")
+
+    from utils import resolve_project_dir, load_config, save_config, get_project_paths
+
+    project_dir = resolve_project_dir()
+    config = load_config(project_dir)
+    paths = get_project_paths(project_dir)
+
+    # ── Models directory ──────────────────────────────────────────────────────
+    dir_path = paths["models"]
+    if not os.path.isdir(dir_path):
+        print(f"\nWarning: models/ not found at {dir_path}")
+        dir_path = input("Enter the path to the folder containing docked PDB models: ").strip().strip('"')
+        while not os.path.exists(dir_path):
+            print("Error: Directory does not exist.")
+            dir_path = input("Please enter a valid directory path: ").strip().strip('"')
+    else:
+        print(f"\nUsing models directory: {dir_path}")
+
+    # Run PLIP analysis — save results into results/PLIP_results/
+    os.makedirs(paths["results"], exist_ok=True)
+    plip_results_dir = run_plip_analysis(
+        dir_path,
+        results_dir=os.path.join(paths["results"], "PLIP_results"),
+    )
+
+    # ── Ligand residue name ───────────────────────────────────────────────────
+    ligand = config.get("ligand_resname")
+    if ligand:
+        print(f"\nUsing ligand ID from config: {ligand}")
+    else:
+        ligand = input("\nEnter the ligand ID as it appears in the PDB models (e.g., 'UNL', 'LIG'): ")
     
-    # Get directory path from user
-    dir_path = input("\nEnter the path to the folder containing docked PDB models: ")
-    while not os.path.exists(dir_path):
-        print("Error: Directory does not exist.")
-        dir_path = input("Please enter a valid directory path: ")
-    
-    # Run PLIP analysis
-    plip_results_dir = run_plip_analysis(dir_path)
-    
-    # Get ligand name from user
-    ligand = input("\nEnter the ligand ID as it appears in the PDB models (e.g., 'UNL', 'LIG'): ")
-    
-    # Generate PLIFs
-    results_df = generate_plifs(plip_results_dir, ligand)
+    # Generate PLIFs — write summary CSV directly to results/
+    results_df = generate_plifs(plip_results_dir, ligand,
+                                summary_dir=paths["results"])
     
     print("\n" + "=" * 70)
     print("PIPELINE COMPLETE")

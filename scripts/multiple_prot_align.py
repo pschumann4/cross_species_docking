@@ -15,7 +15,11 @@
 """
 
 import os
+import sys
 import shutil
+import subprocess
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from utils import check_tools
 
 import pandas as pd
 from Bio import AlignIO
@@ -113,7 +117,11 @@ def align_sequences(fasta_dict, output_file):
         for key, value in fasta_dict.items():
             fasta_file.write(">" + key + "\n" + value + "\n")
     # Run MUSCLE on the input.fasta file
-    os.system("muscle" + " -align input.fasta -output " + output_file)
+    subprocess.run(
+        ["muscle", "-align", "input.fasta", "-output", output_file],
+        check=True,
+        capture_output=True
+    )
     # Read the output file
     aligned = AlignIO.read(output_file, "fasta")
     # Create an empty dictionary to store the aligned sequences
@@ -525,6 +533,7 @@ def multiple_prot_align():
     """
     Main funciton
     """
+    check_tools(["muscle"])
     # Get the path to the directory containing the PDB files
     pwd = input("Enter the path to the directory containing the PDB files: ")
 
@@ -669,21 +678,21 @@ def multiple_prot_align():
     print("Aligning structures to the reference...")
     align_structures(pwd, f"{ref[:-4]}_modified.pdb")
 
-    # Move all non-structural files to a new folder called "details"
-    print('\nMoving all non-structural files to a new folder called "details"...')
-    if not os.path.exists("details"):
-        os.mkdir("details")
+    # Move all non-structural files to a new folder called "results"
+    print('\nMoving all non-structural files to a new folder called "results"...')
+    if not os.path.exists("results"):
+        os.mkdir("results")
     else:
         print(
-            'The "details" folder already exists. Files will be moved to this folder.'
+            'The "results" folder already exists. Files will be moved to this folder.'
         )
     for file in os.listdir(pwd):
         if not file.endswith(".pdb") and not os.path.isdir(file):
             try:
-                shutil.move(file, "details")
+                shutil.move(file, "results")
             except:
                 print(
-                    f'Unable to move {file} to the "details" folder. '
+                    f'Unable to move {file} to the "results" folder. '
                     "It may already exist in the folder."
                 )
 

@@ -26,6 +26,7 @@ Outputs
 """
 
 import os
+import sys
 import subprocess
 import re
 import numpy as np
@@ -33,6 +34,8 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from scipy.stats import gaussian_kde
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from utils import check_tools
 
 
 def plot_tmscore_density(scores, output_path, cutoff=0.5):
@@ -155,6 +158,7 @@ def run_tmalign():
     6. Generate KDE density plot with cutoff at 0.5
     """
 
+    check_tools(["TMalign"])
     # ── 1. Directory input ────────────────────────────────────────────────────
     pdb_dir = input("Enter the directory containing the PDB models: ").strip()
 

@@ -19,9 +19,12 @@ Outputs
 """
 
 import os
+import sys
 import shutil
 import time
 import numpy as np
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from utils import euclidean3d, centroid, load_config, save_config, CONFIG_FILENAME
 import matplotlib.pyplot as plt
 import MDAnalysis as mda
 from MDAnalysis.analysis.rms import RMSD
@@ -134,16 +137,6 @@ def get_binding_pocket_residues(pdb_file, ligand_name):
     --------
     list: Residue IDs (as strings) of binding pocket residues
     """
-    def euclidean3d(v1, v2):
-        """Calculate 3D Euclidean distance"""
-        return np.sqrt((v1[0] - v2[0])**2 + (v1[1] - v2[1])**2 + (v1[2] - v2[2])**2)
-    
-    def centroid(coords):
-        """Calculate centroid of 3D points"""
-        return [np.mean([c[0] for c in coords]),
-                np.mean([c[1] for c in coords]),
-                np.mean([c[2] for c in coords])]
-    
     # Read PDB file
     with open(pdb_file, "r") as f:
         lines = f.readlines()
@@ -375,11 +368,11 @@ def plot_rmsf(rmsf_data, output_path, structure_name, pocket_only=False):
     
     # Add threshold line
     plt.axhline(y=threshold, color='r', linestyle='--', alpha=0.7,
-               label=f'Flexibility threshold: {threshold:.3f} Å…')
+               label=f'Flexibility threshold: {threshold:.3f} Å')
     
     # Add mean line
     plt.axhline(y=rmsf_data['mean'], color='g', linestyle='--', alpha=0.7,
-               label=f'Mean: {rmsf_data["mean"]:.3f} Å…')
+               label=f'Mean: {rmsf_data["mean"]:.3f} Å')
     
     plt.xlabel('Residue Number', fontsize=12)
     plt.ylabel('RMSF (Å…)', fontsize=12)
@@ -797,14 +790,14 @@ def run_mds(processed_filename, output_dir, mds_time=None, extract_ensemble=Fals
                    linestyle='--', label=f'Representative Frame: {plateau_results["mean_representative_time"]:.1f} ps')
         plt.axhline(y=plateau_results['plateau_average'], 
                 color='g', linestyle='--', 
-                label=f'Plateau Mean: {plateau_results["plateau_average"]:.3f} Å…')
+                label=f'Plateau Mean: {plateau_results["plateau_average"]:.3f} Å')
 
         # Add plateau region shading
         plt.fill_between(time_array[plateau_results['start_index']:],
                         plateau_results['plateau_average'] - plateau_results['plateau_std'],
                         plateau_results['plateau_average'] + plateau_results['plateau_std'],
                         color='g', alpha=0.2,
-                        label=f'Std Dev: ±{plateau_results["plateau_std"]:.3f} Å…')
+                        label=f'Std Dev: ±{plateau_results["plateau_std"]:.3f} Å')
 
         plt.xlabel("Time (ps)", fontsize=12)
         plt.ylabel(r'Frame-to-Frame RMSD ($\AA$)', fontsize=12)
@@ -821,8 +814,8 @@ def run_mds(processed_filename, output_dir, mds_time=None, extract_ensemble=Fals
 
         print(f"\nEquilibration analysis for {structure_name}:")
         print(f"  Representative frame time: {plateau_results['mean_representative_time']:.2f} ps")
-        print(f"  Plateau average RMSD: {plateau_results['plateau_average']:.3f} Å…")
-        print(f"  Plateau std dev: {plateau_results['plateau_std']:.3f} Å…")
+        print(f"  Plateau average RMSD: {plateau_results['plateau_average']:.3f} Å")
+        print(f"  Plateau std dev: {plateau_results['plateau_std']:.3f} Å")
         print(f"  Plateau duration: {time_array[-1] - plateau_time:.2f} ps")
         
         # Validate plateau_index is within bounds
@@ -987,6 +980,7 @@ def prep_receptors():
             "That path does not appear to exist.\nPlease enter the path to "
             "the directory containing the PDB files: "
         )
+    pdb_dir = os.path.abspath(pdb_dir)
     os.chdir(pdb_dir)
 
     # Create output directory
@@ -1237,9 +1231,19 @@ def prep_receptors():
                 print(f"  {structure}: {len(rmsf_data['flexible_residues'])} flexible residues")
         
         # Create consolidated flexible residues summary file
-        details_dir = os.path.join(pdb_dir, "details")
+        details_dir = os.path.join(pdb_dir, "results")
         save_flexible_residues_summary(details_dir, results)
-    
+
+    # Persist project-level facts so downstream scripts can skip re-prompting
+    config = load_config(pdb_dir)
+    config["project_dir"] = pdb_dir
+    if ref_name:
+        config["reference_pdb"] = ref_name
+    if ref_ligand:
+        config["ligand_resname"] = ref_ligand
+    save_config(pdb_dir, config)
+    print(f"\nProject config saved to: {os.path.join(pdb_dir, CONFIG_FILENAME)}")
+
     return results
 
 

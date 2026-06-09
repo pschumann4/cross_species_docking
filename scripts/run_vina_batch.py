@@ -15,11 +15,15 @@ This script combines:
 """
 
 import os
+import sys
+import csv
 import subprocess
 import glob
 import shutil
 import time
 from datetime import datetime
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from utils import check_tools, parse_hetatm_coords, rmsd_hungarian
 
 
 # ============================================================================
@@ -41,6 +45,7 @@ def run_vina(verbose=True):
         - success: True if all runs completed, False if any failed
         - results_summary: Dictionary with statistics about the run
     """
+    check_tools(["vina", "vina_split"])
     try:
         # Find all configuration files
         config_files = sorted(glob.glob("*_conf.txt"))
@@ -160,162 +165,255 @@ def run_vina(verbose=True):
         return False, {}
 
 
-def process_vina_output_top_mode_only(chemical):
+def process_vina_output_top_mode_only(chemical, reference_pdb, ligand_resname, details_dir=None):
     """
-    Process Vina output files by extracting ONLY the top binding mode.
-    Creates a flat output directory structure for model generation.
-    
+    Process Vina output files, selecting the pose with the lowest ligand RMSD
+    relative to a reference structure (rather than always taking rank-1).
+
     METHODOLOGY:
-    - Splits each Vina output file using vina_split
-    - Keeps ONLY mode 1 (top binding mode) from each split
-    - Organizes files in flat structure: vina_output/<files>
-    - Deletes intermediate/extra binding modes to save space
-    
-    This simplified approach reduces storage and focuses analysis on the 
-    most probable binding mode per protein-ligand-ensemble combination.
-    
+    - Splits each Vina output file using vina_split to produce per-mode PDBQT files.
+    - For each mode, reads the ligand PDBQT, extracts heavy-atom coordinates, and
+      computes RMSD vs the reference ligand using the Hungarian algorithm for optimal
+      atom matching.
+    - Keeps the three files (ligand / flex / rigid) for whichever mode had the
+      lowest RMSD and deletes all other modes.
+    - Moves the original multi-mode _bound_ file to vina_output/ as a record.
+
+    Using the best-scoring (rank-1) pose would penalize species whose correct
+    binding mode happened to rank below mode 1 by Vina's scoring function.
+    Selecting by RMSD ensures the saved model always reflects the pose most
+    similar to the reference binding mode, keeping downstream RMSD reporting and
+    evaluation consistent.
+
     Parameters:
     -----------
     chemical : str
-        Name of the ligand file (with or without .pdbqt extension)
-    
+        Name of the ligand file (with or without .pdbqt extension).
+    reference_pdb : str
+        Path to the reference PDB file containing the known ligand binding pose.
+    ligand_resname : str
+        Three-letter residue name of the ligand in the reference PDB (e.g. 'DHT').
+
     Returns:
     --------
     tuple: (success, file_count, output_dir)
         - success: True if successful, False otherwise
-        - file_count: Number of top modes extracted
+        - file_count: Number of files processed
         - output_dir: Path to the vina_output directory
     """
     print(f"\n{'='*70}")
-    print("PROCESSING VINA OUTPUT - TOP BINDING MODES ONLY")
+    print("PROCESSING VINA OUTPUT - BEST-RMSD POSE SELECTION")
     print(f"{'='*70}\n")
-    
+
     try:
         # Ensure chemical has .pdbqt extension
         if not chemical.endswith(".pdbqt"):
             chemical += ".pdbqt"
-        
+
         # Remove .pdbqt for pattern matching
         ligand_id = chemical.replace(".pdbqt", "")
-        
-        # Create output folder in current directory
-        output_folder = "vina_output"
+
+        # Load reference ligand coordinates (used for every protein in this batch)
+        with open(reference_pdb, "r") as f:
+            ref_lines = f.readlines()
+        ref_coords, ref_elements = parse_hetatm_coords(ref_lines, ligand_resname)
+        if len(ref_coords) == 0:
+            print(f"ERROR: No heavy atoms found for ligand '{ligand_resname}' in {reference_pdb}.")
+            print("Check that the ligand residue name matches the reference PDB exactly.")
+            return False, 0, "docking_results"
+        print(f"Reference ligand: {len(ref_coords)} heavy atoms loaded from {os.path.basename(reference_pdb)}\n")
+
+        # Create docking_results/ as a sibling of pdbqt_files/ (one level up)
+        output_folder = os.path.normpath(os.path.join(os.getcwd(), "..", "docking_results"))
         os.makedirs(output_folder, exist_ok=True)
-        
+
         # Find all relevant PDBQT files
         pattern = f"*_bound_{ligand_id}.pdbqt"
         pdbqt_files = sorted(glob.glob(pattern))
-        
+
         if not pdbqt_files:
             print(f"No files matching pattern '{pattern}' found.")
             print("This might mean Vina docking failed or no output was generated.")
             return False, 0, output_folder
-        
+
         print(f"Found {len(pdbqt_files)} output file(s) to process")
-        print(f"Extracting top binding mode from each file...\n")
-        
+        print(f"Selecting best-RMSD pose for each file...\n")
+
         processed_count = 0
-        
-        # Process each file
+        score_rows = []  # accumulated per-protein data for docking_scores.csv
+
         for idx, pdbqt_file in enumerate(pdbqt_files, 1):
             try:
                 print(f"[{idx}/{len(pdbqt_files)}] Processing: {pdbqt_file}")
-                
-                # Run vina_split to extract all modes
+
+                # Run vina_split to produce per-mode PDBQT files
                 result = subprocess.run(
                     ["vina_split", "--input", pdbqt_file],
                     capture_output=True,
                     text=True,
                     check=True
                 )
-                
                 if result.stderr:
                     print(f"  Warnings: {result.stderr.strip()}")
-                
-                # Get base name without extension
+
                 base_name = os.path.splitext(pdbqt_file)[0]
-                
-                # Determine protein name
                 protein_name = base_name.replace(f"_bound_{ligand_id}", "")
-                
-                # Move ONLY mode 1 files (top binding mode)
-                mode_1_files = [
-                    f"{base_name}_ligand_1.pdbqt",
-                    f"{base_name}_flex_1.pdbqt",
-                    f"{base_name}_rigid_1.pdbqt"
-                ]
-                
+
+                # ----------------------------------------------------------------
+                # RMSD + affinity scoring: evaluate every mode whose ligand PDBQT exists.
+                #
+                # For each mode we collect:
+                #   - affinity (kcal/mol) from the REMARK VINA RESULT line
+                #   - RMSD vs the reference ligand (Hungarian algorithm)
+                #
+                # Vina always writes modes in descending score order, so mode 1
+                # is always the best docking score regardless of which mode is
+                # ultimately selected for model building.
+                # ----------------------------------------------------------------
+                best_mode = None
+                best_rmsd = float("inf")
+                rank1_rmsd = None
+                rank1_affinity = None
+                selected_affinity = None
+
+                for mode_n in range(1, 101):
+                    lig_file = f"{base_name}_ligand_{mode_n}.pdbqt"
+                    if not os.path.exists(lig_file):
+                        break   # vina_split numbers modes consecutively; stop at first gap
+
+                    with open(lig_file, "r") as lf:
+                        pose_lines = lf.readlines()
+
+                    # Extract affinity from REMARK VINA RESULT line
+                    affinity = None
+                    for line in pose_lines:
+                        if line.startswith("REMARK VINA RESULT:"):
+                            try:
+                                affinity = float(line.split()[3])
+                            except (IndexError, ValueError):
+                                pass
+                            break
+                    if mode_n == 1:
+                        rank1_affinity = affinity
+
+                    pose_coords, pose_elements = parse_hetatm_coords(pose_lines, ligand_resname)
+
+                    # Validate atom composition matches reference
+                    if len(pose_coords) != len(ref_coords):
+                        print(f"  ⚠  Mode {mode_n}: atom count mismatch "
+                              f"({len(pose_coords)} vs {len(ref_coords)}) — skipping")
+                        continue
+                    if sorted(pose_elements) != sorted(ref_elements):
+                        print(f"  ⚠  Mode {mode_n}: element mismatch — skipping")
+                        continue
+
+                    pose_rmsd = rmsd_hungarian(ref_coords, pose_coords)
+                    if mode_n == 1:
+                        rank1_rmsd = pose_rmsd
+                    if pose_rmsd < best_rmsd:
+                        best_rmsd = pose_rmsd
+                        best_mode = mode_n
+                        selected_affinity = affinity
+
+                if best_mode is None:
+                    print(f"  ✖ Could not compute RMSD for any pose — skipping {pdbqt_file}")
+                    continue
+
+                # Report selection
+                if best_mode == 1:
+                    print(f"  ✓ Selected mode 1 (rank-1 = best RMSD = {best_rmsd:.3f} Å, "
+                          f"affinity = {rank1_affinity} kcal/mol)")
+                else:
+                    print(f"  ✓ Selected mode {best_mode} (RMSD {best_rmsd:.3f} Å, "
+                          f"affinity = {selected_affinity} kcal/mol) "
+                          f"over rank-1 (RMSD {rank1_rmsd:.3f} Å, "
+                          f"affinity = {rank1_affinity} kcal/mol)")
+
+                # Accumulate scores for docking_scores.csv
+                score_rows.append({
+                    "protein":                      protein_name,
+                    "best_affinity_kcal_mol":       rank1_affinity,
+                    "selected_mode":                best_mode,
+                    "selected_mode_affinity_kcal_mol": selected_affinity,
+                    "selected_mode_rmsd_A":         round(best_rmsd, 3),
+                })
+
+                # ----------------------------------------------------------------
+                # Move the best-mode files to vina_output/ with clean names
+                # ----------------------------------------------------------------
+                best_mode_files = {
+                    f"{base_name}_ligand_{best_mode}.pdbqt": f"{protein_name}_ligand.pdbqt",
+                    f"{base_name}_flex_{best_mode}.pdbqt":   f"{protein_name}_flex.pdbqt",
+                    f"{base_name}_rigid_{best_mode}.pdbqt":  f"{protein_name}_rigid.pdbqt",
+                }
                 moved_count = 0
-                for split_file in mode_1_files:
-                    if os.path.exists(split_file):
-                        try:
-                            # Rename to remove the "_bound_{ligand}" and "_1" suffixes
-                            if "_ligand_1.pdbqt" in split_file:
-                                new_name = f"{protein_name}_ligand.pdbqt"
-                            elif "_flex_1.pdbqt" in split_file:
-                                new_name = f"{protein_name}_flex.pdbqt"
-                            elif "_rigid_1.pdbqt" in split_file:
-                                new_name = f"{protein_name}_rigid.pdbqt"
-                            else:
-                                new_name = split_file
-                            
-                            dest_path = os.path.join(output_folder, new_name)
-                            shutil.move(split_file, dest_path)
-                            moved_count += 1
-                        except Exception as e:
-                            print(f"  ✖ Error moving {split_file}: {str(e)}")
-                            return False, processed_count, output_folder
-                    else:
-                        # File doesn't exist - this is expected for rigid if no flex residues
-                        pass
-                
-                # Delete all other modes (mode 2, 3, 4, ... up to 100)
+                for src, dst_name in best_mode_files.items():
+                    if os.path.exists(src):
+                        shutil.move(src, os.path.join(output_folder, dst_name))
+                        moved_count += 1
+
+                # Delete all other modes
                 deleted_count = 0
-                for i in range(2, 101):
-                    delete_patterns = [
-                        f"{base_name}_ligand_{i}.pdbqt",
-                        f"{base_name}_flex_{i}.pdbqt",
-                        f"{base_name}_rigid_{i}.pdbqt"
-                    ]
-                    
-                    for delete_file in delete_patterns:
-                        if os.path.exists(delete_file):
-                            os.remove(delete_file)
+                for i in range(1, 101):
+                    for suffix in ("_ligand_", "_flex_", "_rigid_"):
+                        f = f"{base_name}{suffix}{i}.pdbqt"
+                        if os.path.exists(f):
+                            os.remove(f)
                             deleted_count += 1
-                
-                # Also move the original bound file for reference
+
+                # Move the original multi-mode bound file for record-keeping
                 try:
-                    dest_path = os.path.join(output_folder, pdbqt_file)
-                    shutil.move(pdbqt_file, dest_path)
+                    shutil.move(pdbqt_file, os.path.join(output_folder, pdbqt_file))
                 except Exception as e:
-                    print(f"  ✖ Error moving {pdbqt_file}: {str(e)}")
-                
-                print(f"  ✓ Kept {moved_count} top-mode file(s), deleted {deleted_count} extra modes")
+                    print(f"  ⚠  Could not move {pdbqt_file}: {e}")
+
+                print(f"  ✓ Kept {moved_count} file(s) for mode {best_mode}, "
+                      f"deleted {deleted_count} other mode file(s)")
                 processed_count += 1
-                
+
             except subprocess.CalledProcessError as e:
-                print(f"  ✖ Error running vina_split:")
-                print(f"  {e.stderr}")
+                print(f"  ✖ Error running vina_split: {e.stderr}")
                 return False, processed_count, output_folder
-                
+
             except Exception as e:
-                print(f"  ✖ Unexpected error:")
-                print(f"  {str(e)}")
+                print(f"  ✖ Unexpected error: {e}")
                 return False, processed_count, output_folder
-        
+
+        # --------------------------------------------------------------------
+        # Write docking_scores.csv so downstream tools (get_summary.py,
+        # susceptibility_analysis.py) always have access to:
+        #   - best_affinity_kcal_mol  : mode-1 score (best docking score)
+        #   - selected_mode           : which mode was chosen by RMSD
+        #   - selected_mode_affinity  : that mode's score (may differ from best)
+        #   - selected_mode_rmsd_A    : RMSD of the chosen pose vs reference
+        # --------------------------------------------------------------------
+        csv_dir = details_dir if details_dir and os.path.isdir(details_dir) else output_folder
+        scores_csv = os.path.join(csv_dir, "docking_scores.csv")
+        fieldnames = [
+            "protein",
+            "best_affinity_kcal_mol",
+            "selected_mode",
+            "selected_mode_affinity_kcal_mol",
+            "selected_mode_rmsd_A",
+        ]
+        with open(scores_csv, "w", newline="") as csvfile:
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(score_rows)
+        print(f"Docking scores written to: {scores_csv}")
+
         print(f"\n{'='*70}")
         print(f"PROCESSING COMPLETE")
         print(f"{'='*70}")
         print(f"Processed {processed_count} output file(s)")
-        print(f"Extracted {processed_count} top binding modes")
         print(f"Results saved to: {os.path.abspath(output_folder)}")
         print(f"{'='*70}\n")
-        
+
         return True, processed_count, output_folder
-        
+
     except Exception as e:
         print(f"Unexpected error in process_vina_output: {str(e)}")
-        return False, 0, "vina_output"
+        return False, 0, "docking_results"
 
 
 # ============================================================================
@@ -907,17 +1005,17 @@ def combine_pdbqt_manual(protein_name, vina_output_dir, ligand_resname, referenc
 
 def copy_missing_rigid_files(vina_output_dir, original_pdbqt_dir):
     """
-    Copy rigid PDBQT files from original directory to vina_output if missing.
-    
-    This handles the case where ligand and flex files are in vina_output but
-    rigid files are still in the original PDBQT directory.
-    
+    Copy rigid PDBQT files from original directory to docking_results if missing.
+
+    This handles the case where ligand and flex files are in docking_results but
+    rigid files are still in the pdbqt_files directory.
+
     Parameters:
     -----------
     vina_output_dir : str
-        Path to vina_output directory
+        Path to docking_results directory
     original_pdbqt_dir : str
-        Path to original PDBQT directory (parent of vina_output)
+        Path to pdbqt_files directory
     
     Returns:
     --------
@@ -929,7 +1027,7 @@ def copy_missing_rigid_files(vina_output_dir, original_pdbqt_dir):
     ligand_files = glob.glob(os.path.join(vina_output_dir, "*_ligand.pdbqt"))
     
     if not ligand_files:
-        print("    No ligand files found in vina_output")
+        print("    No ligand files found in docking_results")
         return 0
     
     copied_count = 0
@@ -942,7 +1040,7 @@ def copy_missing_rigid_files(vina_output_dir, original_pdbqt_dir):
         rigid_in_output = os.path.join(vina_output_dir, rigid_name)
         rigid_in_original = os.path.join(original_pdbqt_dir, rigid_name)
         
-        # If rigid file missing from vina_output but exists in original dir
+        # If rigid file missing from docking_results but exists in pdbqt_files dir
         if not os.path.exists(rigid_in_output) and os.path.exists(rigid_in_original):
             try:
                 shutil.copy2(rigid_in_original, rigid_in_output)
@@ -952,21 +1050,21 @@ def copy_missing_rigid_files(vina_output_dir, original_pdbqt_dir):
                 print(f"    ✖ Error copying {rigid_name}: {str(e)}")
     
     if copied_count > 0:
-        print(f"  Copied {copied_count} rigid file(s) to vina_output")
+        print(f"  Copied {copied_count} rigid file(s) to docking_results")
     else:
         print(f"  All rigid files already present (or not found in original directory)")
     
     return copied_count
 
 
-def generate_models_from_pdbqt(vina_output_dir, ligand_resname, reference_file):
+def generate_models_from_pdbqt(vina_output_dir, ligand_resname, reference_file, pdbqt_dir=None):
     """
     Generate PDB models from PDBQT files with reference-based validation.
-    
+
     WORKFLOW:
     1. Parse reference structure to get ligand atom ordering
     2. Check if obabel is available
-    3. Copy any missing rigid files from parent directory
+    3. Copy any missing rigid files from pdbqt_files directory
     4. For each structure:
        - Combine rigid + flex + ligand PDBQT files
        - Convert using obabel (preferred) or manual parsing
@@ -983,11 +1081,13 @@ def generate_models_from_pdbqt(vina_output_dir, ligand_resname, reference_file):
     Parameters:
     -----------
     vina_output_dir : str
-        Path to directory containing PDBQT files
+        Path to directory containing PDBQT files (docking_results/)
     ligand_resname : str
         3-letter ligand residue name
     reference_file : str
         Path to reference PDB structure
+    pdbqt_dir : str, optional
+        Path to pdbqt_files/ directory; used to locate missing rigid files
     
     Returns:
     --------
@@ -1013,10 +1113,10 @@ def generate_models_from_pdbqt(vina_output_dir, ligand_resname, reference_file):
         print(f"  ⚠  Open Babel not found - using manual PDBQT parsing")
         print(f"  Note: Manual parsing may have element symbol issues")
     
-    # Copy missing rigid files
-    parent_dir = os.path.dirname(vina_output_dir)
-    if parent_dir and os.path.exists(parent_dir):
-        copy_missing_rigid_files(vina_output_dir, parent_dir)
+    # Copy missing rigid files from pdbqt_files/ into docking_results/
+    search_dir = pdbqt_dir if (pdbqt_dir and os.path.exists(pdbqt_dir)) else os.path.dirname(vina_output_dir)
+    if search_dir and os.path.exists(search_dir):
+        copy_missing_rigid_files(vina_output_dir, search_dir)
     
     # Find all rigid PDBQT files
     rigid_pattern = os.path.join(vina_output_dir, "*_rigid.pdbqt")
@@ -1119,33 +1219,34 @@ def run_integrated_workflow():
     print("AUTODOCK VINA INTEGRATED WORKFLOW")
     print("Batch Docking → Top Mode Extraction → Model Generation")
     print("="*70 + "\n")
-    
+
+    from utils import (resolve_project_dir, load_config, save_config,
+                       get_project_paths, resolve_reference_pdb)
+
+    project_dir = resolve_project_dir()
+    config = load_config(project_dir)
+    paths = get_project_paths(project_dir)
+
     # ========================================================================
     # STEP 1: Get working directory and validate
     # ========================================================================
-    
-    pdbqt_dir = input("Enter the path to the PDBQT file directory: ").strip()
-    
-    # Strip quotes if present
-    if pdbqt_dir.startswith('"') and pdbqt_dir.endswith('"'):
-        pdbqt_dir = pdbqt_dir[1:-1]
-    
-    # Verify the directory exists
-    while not os.path.exists(pdbqt_dir):
-        pdbqt_dir = input("That path does not appear to exist.\n"
-                          "Please enter the path to the PDBQT file directory: ").strip()
-        if pdbqt_dir.startswith('"') and pdbqt_dir.endswith('"'):
-            pdbqt_dir = pdbqt_dir[1:-1]
-    
-    # Change to the configuration directory
+
+    pdbqt_dir = paths["pdbqt_files"]
+    if not os.path.isdir(pdbqt_dir):
+        print(f"ERROR: pdbqt_files/ not found at {pdbqt_dir}")
+        print("Please run prep_pdbqt.py first.")
+        return
+
+    # Resolve to absolute path before chdir so we can pass it to downstream functions
+    pdbqt_dir = os.path.abspath(pdbqt_dir)
     original_dir = os.getcwd()
     os.chdir(pdbqt_dir)
     print(f"Working directory: {os.getcwd()}\n")
-    
+
     # ========================================================================
     # STEP 2: Validate required files for docking
     # ========================================================================
-    
+
     # Check for config files
     config_count = len(glob.glob("*_conf.txt"))
     if config_count == 0:
@@ -1153,29 +1254,70 @@ def run_integrated_workflow():
         print("Please run the config file generator first.")
         os.chdir(original_dir)
         return
-    
+
     print(f"Found {config_count} configuration file(s)")
-    
-    # Get the ligand file name
-    chemical = input("\nEnter the ligand filename (with or without .pdbqt): ").strip()
-    
-    # Remove .pdbqt if present for validation
-    ligand_id = chemical.replace(".pdbqt", "")
-    
-    # Verify ligand file exists
-    ligand_path = f"{ligand_id}.pdbqt"
-    while not os.path.exists(ligand_path):
-        print(f"Ligand file '{ligand_path}' not found in directory.")
-        chemical = input("Please enter the ligand filename (case sensitive): ").strip()
+
+    # ── Ligand name ──────────────────────────────────────────────────────────
+    ligand_id = config.get("ligand_name")
+    if ligand_id and os.path.exists(f"{ligand_id}.pdbqt"):
+        print(f"\nUsing ligand from config: {ligand_id}.pdbqt")
+    else:
+        if ligand_id:
+            print(f"\nWarning: {ligand_id}.pdbqt not found. Please enter manually.")
+        chemical = input("\nEnter the ligand filename (with or without .pdbqt): ").strip()
         ligand_id = chemical.replace(".pdbqt", "")
-        ligand_path = f"{ligand_id}.pdbqt"
-    
-    print(f"Using ligand: {ligand_path}")
-    
+        while not os.path.exists(f"{ligand_id}.pdbqt"):
+            print(f"Ligand file '{ligand_id}.pdbqt' not found in directory.")
+            chemical = input("Please enter the ligand filename (case sensitive): ").strip()
+            ligand_id = chemical.replace(".pdbqt", "")
+        config["ligand_name"] = ligand_id
+        save_config(project_dir, config)
+
+    print(f"Using ligand: {ligand_id}.pdbqt")
+
     # ========================================================================
-    # STEP 3: Decide on workflow scope (before docking begins)
+    # STEP 3: Gather reference structure info and decide on workflow scope
     # ========================================================================
-    
+
+    print(f"\n{'='*70}")
+    print("REFERENCE STRUCTURE")
+    print(f"{'='*70}")
+    print("\nThe reference PDB is required for two purposes:")
+    print("  1. RMSD-based pose selection — the docked pose most similar to the")
+    print("     reference binding mode is kept, not simply the top-scoring pose.")
+    print("  2. Model generation — atom ordering and element symbols are matched")
+    print("     to the reference so all output models are directly comparable.")
+
+    # ── Ligand residue name ──────────────────────────────────────────────────
+    ligand_resname = config.get("ligand_resname")
+    if ligand_resname:
+        print(f"\nUsing ligand residue name from config: {ligand_resname}")
+    else:
+        ligand_resname = input("\nEnter 3-letter ligand residue name (e.g., LIG, DHT): ").strip().upper()
+        while len(ligand_resname) != 3:
+            print("Ligand name must be exactly 3 characters.")
+            ligand_resname = input("Enter 3-letter ligand residue name: ").strip().upper()
+        config["ligand_resname"] = ligand_resname
+        save_config(project_dir, config)
+    print(f"Ligand residue name: {ligand_resname}")
+
+    # ── Reference PDB path ───────────────────────────────────────────────────
+    reference_file = resolve_reference_pdb(config, project_dir)
+    if reference_file:
+        print(f"\nUsing reference PDB from config: {os.path.basename(reference_file)}")
+    else:
+        reference_file = input("\nEnter path to reference PDB file: ").strip().strip('"')
+        while not os.path.exists(reference_file):
+            print(f"Reference file not found: {reference_file}")
+            reference_file = input("Enter path to reference PDB file: ").strip().strip('"')
+        config["reference_pdb"] = os.path.basename(reference_file)
+        save_config(project_dir, config)
+    print(f"Reference structure: {os.path.basename(reference_file)}")
+
+    # ========================================================================
+    # STEP 3b: Decide on model generation scope
+    # ========================================================================
+
     print(f"\n{'='*70}")
     print("WORKFLOW PLANNING")
     print(f"{'='*70}")
@@ -1186,49 +1328,8 @@ def run_integrated_workflow():
     print("  - Preserve ligand atom ordering from reference structure")
     print("  - Handle flexible residues automatically")
     print("  - Organize final models in a 'models' directory")
-    
+
     generate_models = input("\nGenerate PDB models after docking? (y/n): ").lower()
-    
-    # Get model generation parameters
-    ligand_resname = None
-    reference_file = None
-    
-    if generate_models == 'y':
-        print(f"\n{'='*70}")
-        print("MODEL GENERATION PARAMETERS")
-        print(f"{'='*70}")
-        
-        # Get ligand residue name
-        ligand_resname = input("\nEnter 3-letter ligand residue name for PDB files (e.g., LIG, DHT): ").strip()
-        while len(ligand_resname) != 3:
-            print("Ligand name must be exactly 3 characters")
-            ligand_resname = input("Enter 3-letter ligand residue name: ").strip()
-        
-        print(f"Ligand residue name: {ligand_resname}")
-        
-        # Get reference structure
-        print(f"\n{'='*70}")
-        print("REFERENCE STRUCTURE")
-        print(f"{'='*70}")
-        print("\nThe reference structure is used to:")
-        print("  1. Maintain consistent ligand atom ordering across all models")
-        print("  2. Validate that docked poses contain expected atoms")
-        print("  3. Ensure proper element symbols (when using obabel)")
-        
-        reference_file = input("\nEnter path to reference PDB file (modified structure): ").strip()
-        
-        # Strip quotes if present
-        if reference_file.startswith('"') and reference_file.endswith('"'):
-            reference_file = reference_file[1:-1]
-        
-        # Verify reference file exists
-        while not os.path.exists(reference_file):
-            print(f"Reference file not found: {reference_file}")
-            reference_file = input("Enter path to reference PDB file: ").strip()
-            if reference_file.startswith('"') and reference_file.endswith('"'):
-                reference_file = reference_file[1:-1]
-        
-        print(f"Reference structure: {os.path.basename(reference_file)}")
     
     # ========================================================================
     # STEP 4: Run Vina docking
@@ -1248,10 +1349,14 @@ def run_integrated_workflow():
         return
     
     # ========================================================================
-    # STEP 5: Process Vina output - TOP MODES ONLY
+    # STEP 5: Process Vina output - BEST-RMSD POSE SELECTION
     # ========================================================================
-    
-    process_success, file_count, output_dir = process_vina_output_top_mode_only(ligand_id)
+
+    os.makedirs(paths["results"], exist_ok=True)
+    process_success, file_count, output_dir = process_vina_output_top_mode_only(
+        ligand_id, reference_file, ligand_resname,
+        details_dir=paths["results"]
+    )
     
     if not process_success:
         print("Docking completed but there were errors processing output files.")
@@ -1268,7 +1373,8 @@ def run_integrated_workflow():
         model_success = generate_models_from_pdbqt(
             os.path.abspath(output_dir),
             ligand_resname,
-            reference_file
+            reference_file,
+            pdbqt_dir=pdbqt_dir
         )
         
         if model_success:
@@ -1284,7 +1390,7 @@ def run_integrated_workflow():
         print("\n" + "="*70)
         print("WORKFLOW COMPLETED")
         print("="*70)
-        print(f"\nVina output files are in: {os.path.abspath(output_dir)}")
+        print(f"\nDocking results are in: {os.path.abspath(output_dir)}")
         print("="*70 + "\n")
     
     # Modify the format of the reference file to match the generated models and copy to output directory

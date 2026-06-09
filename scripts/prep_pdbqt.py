@@ -185,97 +185,40 @@ def format_flexible_residues(pdb_file, residue_ids):
 
 
 def main():
-    pdb_dir = input("Enter the path to the directory containing the prepared PDB files: ")
-    while not os.path.exists(pdb_dir):
-        print("That path does not appear to exist.")
-        pdb_dir = input("\nPlease enter the path to the directory containing the prepared PDB files: ")
-    
+    import sys
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from utils import resolve_project_dir, get_project_paths
+
+    project_dir = resolve_project_dir()
+    paths = get_project_paths(project_dir)
+    pdb_dir = paths["prepared_structures"]
+
+    if not os.path.isdir(pdb_dir):
+        print(f"Error: prepared_structures/ not found at {pdb_dir}")
+        print("Please run mds_structure_prep.py first.")
+        return
+
     os.chdir(pdb_dir)
     pdb_files = [f for f in os.listdir(pdb_dir) if f.endswith(".pdb")]
-    
-    # Separate ensemble and non-ensemble structures for reporting
-    ensemble_files = [f for f in pdb_files if '_ensemble_' in f]
-    non_ensemble_files = [f for f in pdb_files if '_ensemble_' not in f]
-    
-    print(f"\nFound {len(pdb_files)} PDB file(s):")
-    print(f"  Non-ensemble structures: {len(non_ensemble_files)}")
-    print(f"  Ensemble structures: {len(ensemble_files)}")
+    print(f"\nFound {len(pdb_files)} PDB file(s)")
 
-    flex_residues = input("\nAre there flexible residues to prepare? (y/n): ").lower()
-    while flex_residues not in ["y", "n"]:
-        flex_residues = input("Please enter y or n: ").lower()
-
+    # ── Flexible residues (auto-detected from results/flex_residues.txt) ──────
     flex_residues_dict = {}
-    if flex_residues == "y":
-        # First, search parent directories (upward search)
-        details_residues_file = None
-        current_dir = pdb_dir
-        max_parents_to_search = 3  # How many levels up to search
-        
-        for _ in range(max_parents_to_search):
-            details_path = os.path.join(current_dir, "details")
-            potential_file = os.path.join(details_path, "flex_residues.txt")
-            
-            if os.path.exists(potential_file):
-                details_residues_file = potential_file
-                print(f"\nFound flex_residues.txt in parent directory: {details_residues_file}")
-                break
-            
-            # Move up one directory level
-            parent_dir = os.path.dirname(current_dir)
-            if parent_dir == current_dir:  # Reached root directory
-                break
-            current_dir = parent_dir
-        
-        # If not found in parents, search subdirectories (downward search)
-        if details_residues_file is None:
-            for root, dirs, files in os.walk(pdb_dir, topdown=True):
-                if "details" in dirs:
-                    details_path = os.path.join(root, "details")
-                    potential_file = os.path.join(details_path, "flex_residues.txt")
-                    if os.path.exists(potential_file):
-                        details_residues_file = potential_file
-                        print(f"\nFound flex_residues.txt in subdirectory: {details_residues_file}")
-                        break
-                if root.count(os.sep) - pdb_dir.count(os.sep) >= 3:
-                    break
-        
-        # Now use the found file or prompt user
-        if details_residues_file is not None:
-            residues_file = details_residues_file
-        else:
-            print("\nCould not find flex_residues.txt in parent or subdirectories.")
-            residues_file = input("Enter the path to the flex_residues.txt file: ").strip('"')
-            while not os.path.exists(residues_file):
-                residues_file = input("That path does not appear to exist.\nPlease enter the path to the flex_residues.txt file: ").strip('"')
-        
-        if os.path.exists(details_residues_file):
-            print(f"\nFound flex_residues.txt in details subdirectory: {details_residues_file}")
-            residues_file = details_residues_file
-        else:
-            residues_file = input("Enter the path to the flex_residues.txt file: ").strip('"')
-            while not os.path.exists(residues_file):
-                residues_file = input("That path does not appear to exist.\nPlease enter the path to the flex_residues.txt file: ").strip('"')
-        
-        print(f"Reading flexible residues from: {residues_file}")
-        flex_residues_dict = get_flexible_residues(residues_file)
+    details_residues_file = os.path.join(paths["results"], "flex_residues.txt")
 
-        # Verify that the flexible residue data corresponds to the structures we have
+    if os.path.exists(details_residues_file):
+        print(f"Found flex_residues.txt in results/ — loading flexible residue data...")
+        flex_residues_dict = get_flexible_residues(details_residues_file)
+
         structure_names = set(get_base_structure_name(pdb) for pdb in pdb_files)
-        flex_structure_names = set(flex_residues_dict.keys())
-        missing_structures = structure_names - flex_structure_names
+        missing_structures = structure_names - set(flex_residues_dict.keys())
         if missing_structures:
-            print(f"\nWarning: Flexible residue data is missing for the following structures:")
+            print(f"\nWarning: Flexible residue data is missing for:")
             for struct in missing_structures:
                 print(f"  {struct}")
             print("These structures will be prepared as rigid receptors.")
-        
-        # Report what was loaded
-        print(f"\nLoaded flexible residue data for {len(flex_residues_dict)} structure(s)")
-        if flex_residues_dict:
-            structures_with_flex = sum(1 for residues in flex_residues_dict.values() if residues)
-            print(f"  Structures with flexible residues: {structures_with_flex}")
-            print(f"  Structures without flexible residues: {len(flex_residues_dict) - structures_with_flex}")
+    else:
+        print("No flex_residues.txt found in results/ — all receptors will be prepared as rigid.")
 
     # Process all PDB files
     processed_count = 0
@@ -320,16 +263,16 @@ def main():
         
         processed_count += 1
 
-    # Move PDBQT files to output directory
-    if not os.path.exists("pdbqt_files"):
-        os.mkdir("pdbqt_files")
-    
+    # Move PDBQT files to output directory (sibling of prepared_structures/)
+    pdbqt_out = os.path.normpath(os.path.join(pdb_dir, "..", "pdbqt_files"))
+    os.makedirs(pdbqt_out, exist_ok=True)
+
     pdbqt_count = 0
     for f in os.listdir(pdb_dir):
         if f.endswith(".pdbqt"):
-            os.replace(f, os.path.join("pdbqt_files", f))
+            os.replace(f, os.path.join(pdbqt_out, f))
             pdbqt_count += 1
-    
+
     # Print summary
     print("\n" + "="*60)
     print("Processing Complete")
@@ -337,7 +280,7 @@ def main():
     print(f"\nStructures processed: {processed_count}")
     print(f"Structures skipped (references): {skipped_count}")
     print(f"PDBQT files created: {pdbqt_count}")
-    print(f"\nSuccessfully prepared structures have been moved to the 'pdbqt_files' directory.")
+    print(f"\nSuccessfully prepared structures have been moved to: {pdbqt_out}")
 
 if __name__ == "__main__":
     main()

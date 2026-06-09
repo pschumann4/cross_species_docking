@@ -1,204 +1,126 @@
 """
- This script will create a summary file containing the binding affinity, 
- PPS-Score, ligand RMSD, and PLIF Tanimoto values for each binding model. 
- The user will be prompted to enter the following information:                                                                           
-                                                                                                  
- 1. The directory containing the AutoDock Vina output files                                          
- 2. The name of the ligand, which should match the suffix of the log files                        
- 3. The file path for the PPS-Score file                                                          
- 4. The file path for the ligand RMSD file                                                        
- 5. The file path for the PLIF Tanimoto matrix file                                               
- 6. The name of the reference model (as listed in the matrix)                                     
- 7. The output directory                                                                          
-                                                                                                  
- The summary file will be written to the specified output directory.                              
+Assemble the final per-model summary CSV from all pipeline outputs.
+
+All data sources are resolved automatically from the project's results/ directory:
+    results/docking_scores.csv          — binding affinities + lig_rmsd  (required)
+    results/PPS_files/*_PPS.txt         — PPS-Score values                (optional)
+    results/plif_similarity_summary.csv — PLIF Tanimoto                   (optional)
+
+lig_rmsd is read directly from the selected_mode_rmsd_A column of docking_scores.csv.
+run_vina_batch.py already computes this value (Hungarian-algorithm RMSD vs reference)
+while selecting the best pose, so running ligand_rmsd.py first is not required.
+ligand_rmsd.py remains useful only if you want the RMSD histogram (ligand_rmsd.png).
+
+Output: results/<ligand>_summary.csv
+No user prompts are issued — missing optional sources are skipped with a warning.
 """
 
 import os
+import sys
 import pandas as pd
 
 
 def get_summary():
     """
-    Main function.
-    Prompts user for the necessary information and creates the summary file.
+    Build the summary CSV from files already present in results/.
+    Missing optional sources are reported and left as NaN in the output.
     """
-    # Initialize empty dataframe to store the summary data
-    summary_df = pd.DataFrame(
-        columns=[
-            "binding_model",
-            "species",
-            "ensemble",
-            "binding_affinity",
-            "ppsscore",
-            "lig_rmsd",
-            "plif_tanimoto",
-        ]
-    )
-    
-    # Prompt user for directory containing the AutoDock Vina output files
-    vina_logs = input(
-        "Enter the path to the 'vina_output' directory: "
-    )
-    
-    # Prompt user for ligand name
-    ligand = input(
-        "Enter the name of the ligand: "
-    )
-    
-    # Initialize lists to hold binding affinities, species names, and ensemble numbers
-    binding_affinities = []
-    species = []
-    ensembles = []
-    file_count = 0
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from utils import resolve_project_dir, load_config, save_config, get_project_paths
 
-    # Find all *_ligand.pdbqt files in the vina_output directory
-    # These files contain the docked ligand poses with binding affinity information
-    vina_files = [
-        f for f in os.listdir(vina_logs)
-        if f.endswith("_ligand.pdbqt")
+    project_dir = resolve_project_dir()
+    config      = load_config(project_dir)
+    paths       = get_project_paths(project_dir)
+    details     = paths["results"]
+
+    print("\n" + "=" * 60)
+    print("ASSEMBLING PIPELINE SUMMARY")
+    print("=" * 60)
+
+    # ── Ligand name ───────────────────────────────────────────────────────────
+    ligand = config.get("ligand_name")
+    if not ligand:
+        ligand = input("Ligand name not found in config. Enter ligand name: ").strip()
+        config["ligand_name"] = ligand
+        save_config(project_dir, config)
+    print(f"Ligand: {ligand}")
+
+    # ── 1. Docking scores (required) ─────────────────────────────────────────
+    scores_csv = os.path.join(details, "docking_scores.csv")
+    if not os.path.exists(scores_csv):
+        print(f"\nERROR: docking_scores.csv not found in:\n  {details}")
+        print("Re-run run_vina_batch.py to regenerate it.")
+        return
+
+    scores_df = pd.read_csv(scores_csv).sort_values("protein").reset_index(drop=True)
+    print(f"\n[1/4] Docking scores loaded — {len(scores_df)} protein(s)")
+
+    # Parse species and ensemble number from protein name.
+    # Examples:
+    #   "Chicken_AR_modified_ensemble_1" → species="Chicken", ensemble=1
+    #   "Human_AR_modified"              → species="Human",   ensemble=0
+    species   = [row.split("_")[0] for row in scores_df["protein"]]
+    ensembles = [
+        int(row.split("_")[-1]) if row.split("_")[-1].isdigit() else 0
+        for row in scores_df["protein"]
     ]
-    
-    # Sort files to ensure consistent ordering
-    vina_files.sort()
 
-    print(f"Found {len(vina_files)} ligand files to process")
+    # lig_rmsd comes directly from docking_scores.csv (selected_mode_rmsd_A).
+    # run_vina_batch.py already computes this via the Hungarian algorithm while
+    # selecting the best-RMSD pose; ligand_rmsd.py would recompute the same
+    # number from the saved model PDB, so there is no reason to run it first.
+    summary_df = pd.DataFrame({
+        "binding_model":    range(1, len(scores_df) + 1),
+        "species":          species,
+        "ensemble":         ensembles,
+        "binding_affinity": scores_df["best_affinity_kcal_mol"].tolist(),
+        "lig_rmsd":         scores_df["selected_mode_rmsd_A"].tolist(),
+        "ppsscore":         None,
+        "plif_tanimoto":    None,
+    })
+    print(f"      lig_rmsd pulled from selected_mode_rmsd_A column")
 
-    # Read binding affinity from each *_ligand.pdbqt file
-    for file in vina_files:
-        file_count += 1
-        filepath = os.path.join(vina_logs, file)
-        
-        # Read the PDBQT file and extract binding affinity
-        with open(filepath, "r") as f:
-            lines = f.readlines()
-            # Look for the binding affinity in the REMARK VINA RESULT line
-            for line in lines:
-                if line.startswith("REMARK VINA RESULT:"):
-                    # Extract the binding affinity (4th element when split by whitespace)
-                    binding_affinity = line.split()[3]
-                    binding_affinities.append(binding_affinity)
-                    
-                    # Extract model name from filename (remove '_ligand.pdbqt' suffix)
-                    model_name = file.replace("_ligand.pdbqt", "")
-                    
-                    # Parse species and ensemble from model name
-                    # Split by underscore to get name components
-                    name_parts = model_name.split("_")
-                    
-                    # Species is the first element
-                    species_name = name_parts[0]
-                    species.append(species_name)
-                    
-                    # Ensemble number is the last element if it's numeric, otherwise 0
-                    # Examples:
-                    #   "Chicken_AR_modified_ensemble_1" -> ensemble = 1
-                    #   "Chicken_AR_modified" -> ensemble = 0
-                    last_element = name_parts[-1]
-                    if last_element.isdigit():
-                        ensemble_num = int(last_element)
-                    else:
-                        ensemble_num = 0
-                    ensembles.append(ensemble_num)
-                    
-                    # Only take the first REMARK VINA RESULT line (top pose)
-                    break
+    # ── 2. PPS-Scores (optional) ──────────────────────────────────────────────
+    pps_dir = os.path.join(details, "PPS_files")
+    if os.path.isdir(pps_dir):
+        pps_files = sorted(f for f in os.listdir(pps_dir) if f.endswith("_PPS.txt"))
+        ppsscores = []
+        for fname in pps_files:
+            with open(os.path.join(pps_dir, fname)) as f:
+                lines = f.readlines()
+            try:
+                # PPS-Score is on the third line (index 2), third whitespace-separated token
+                ppsscores.append(lines[2].split()[2])
+            except (IndexError, ValueError) as e:
+                print(f"  Warning: could not parse PPS score from {fname}: {e}")
+                ppsscores.append(None)
+        summary_df["ppsscore"] = ppsscores
+        print(f"[2/3] PPS-Scores loaded — {len(ppsscores)} file(s)")
+    else:
+        print(f"[2/3] PPS_files/ not found in results/ — ppsscore column left blank")
 
-    # Verify we got data for all files
-    if len(binding_affinities) != len(vina_files):
-        print(f"Warning: Expected {len(vina_files)} binding affinities but found {len(binding_affinities)}")
-
-    # Add the binding affinities, species names, and ensemble numbers to the dataframe
-    summary_df["binding_affinity"] = binding_affinities
-    summary_df["species"] = species
-    summary_df["ensemble"] = ensembles
-
-    # Get the number of rows in the dataframe
-    n_rows = len(summary_df.index)
-    binding_models = list(range(1, n_rows + 1))
-    # Add the binding models to the dataframe
-    summary_df["binding_model"] = binding_models
-    
-    # Print the df
-    print("\nBinding affinity data:")
-    print(summary_df)
-
-    # Prompt user for the directory containing the PPS-Score files
-    ppsscore_dir = input(
-        "\nEnter the path to the 'PPS_files' directory: "
-    )
-    
-    # Create a list to hold the PPS-Score values
-    ppsscores = []
-
-    # Read the PPS-Score files
-    # Sort to ensure consistent ordering with other data
-    pps_files = sorted(os.listdir(ppsscore_dir))
-    for file in pps_files:
-        with open(os.path.join(ppsscore_dir, file), "r") as f:
-            lines = f.readlines()
-            # PPS-Score is on the third line (index 2)
-            pps_line = lines[2]
-            pps_line = pps_line.split()
-            ppsscores.append(pps_line[2])
-
-    # Add the PPS-Score values to the dataframe
-    summary_df["ppsscore"] = ppsscores
-    
-    # Print the df
-    print("\nAfter adding PPS-Scores:")
-    print(summary_df)
-
-    # Prompt user for the ligand RMSD file
-    lig_rmsd_file = input("\nEnter the file path for the ligand RMSD file: ")
-    # Remove quotes from the file path
-    lig_rmsd_file = lig_rmsd_file.replace('"', "")
-    
-    # Read the ligand RMSD file
-    with open(lig_rmsd_file, "r") as f:
-        lines = f.readlines()
-        lines = [line.split() for line in lines]
-        # Skip the first two header lines
-        lig_rmsds = [line[1] for line in lines[2:]]
-    
-    # Add the ligand RMSD values to the dataframe
-    summary_df["lig_rmsd"] = lig_rmsds
-    
-    # Print the df
-    print("\nAfter adding ligand RMSDs:")
-    print(summary_df)
-
-    # Prompt user for the PLIF Tanimoto file
-    plif_tanimoto_file = input(
-        "\nEnter the file path for the plif_similarity_summary.csv file: "
-    )
-    plif_tanimoto_file = plif_tanimoto_file.replace('"', "")
-    plif_tanimoto_df = pd.read_csv(plif_tanimoto_file)
-    
-    # Sort the PLIF Tanimoto dataframe by test_structure to ensure consistent ordering
-    plif_tanimoto_df = plif_tanimoto_df.sort_values(by="test_structure")
-    
-    # Copy the PLIF Tanimoto values to the summary dataframe
-    summary_df["plif_tanimoto"] = plif_tanimoto_df["tanimoto_similarity"].values
-    
-    print("\nFinal summary with all data:")
-    print(summary_df)
-
-    # Prompt user for an output directory
-    output_dir = input("\nSpecify the output directory: ")
-    
-    # Create the output file path using the ligand name
-    output_file = os.path.join(output_dir, ligand + "_summary.csv")
-    
-    # Write the dataframe to a csv file
-    summary_df.to_csv(output_file, index=False)
-    
-    # Print a summary message to the user
-    print(
-        "\nThe summary file ({}) has been created in the specified directory.".format(
-            os.path.basename(output_file)
+    # ── 3. PLIF Tanimoto (optional) ───────────────────────────────────────────
+    plif_file = os.path.join(details, "plif_similarity_summary.csv")
+    if os.path.exists(plif_file):
+        plif_df = (
+            pd.read_csv(plif_file)
+              .sort_values("test_structure")
+              .reset_index(drop=True)
         )
-    )
+        summary_df["plif_tanimoto"] = plif_df["tanimoto_similarity"].values
+        print(f"[3/3] PLIF Tanimoto loaded — {len(plif_df)} value(s)")
+    else:
+        print(f"[3/3] plif_similarity_summary.csv not found in results/ — plif_tanimoto column left blank")
+
+    # ── Write output ──────────────────────────────────────────────────────────
+    os.makedirs(details, exist_ok=True)
+    output_file = os.path.join(details, f"{ligand}_summary.csv")
+    summary_df.to_csv(output_file, index=False)
+
+    print(f"\n{'=' * 60}")
+    print(f"Summary saved → {output_file}")
+    print("=" * 60)
+    print(summary_df.to_string(index=False))
 
 
 if __name__ == "__main__":
