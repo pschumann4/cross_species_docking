@@ -112,7 +112,9 @@ conda activate cross-species-docking
 
 ## Pipeline Overview
 
-The pipeline proceeds in 11 steps, from protein structure acquisition through final susceptibility assessment. It is recommended to update your working directory to `~\cross-species-docking\scripts` before beginning.
+The pipeline proceeds in 12 steps, from protein structure acquisition through final susceptibility assessment. It is recommended to update your working directory to `~\cross-species-docking\scripts` before beginning.
+
+**Project configuration:** Each script automatically locates your working directory by searching for a `project_config.json` file. The first time a script runs, you will be prompted to confirm or enter the project directory path; this value is saved to `project_config.json` and reused by all subsequent scripts. Other settings (ligand name, reference PDB path, docking parameters) are saved to this file in the same way, so most prompts only appear once.
 
 ---
 
@@ -187,7 +189,7 @@ Run `multiple_prot_align.py` to perform a multiple sequence alignment (via MUSCL
 python multiple_prot_align.py
 ```
 
-Outputs include a set of modified PDB files, a `details/` folder with alignment metadata, and `residue_positions.csv` mapping new residue positions back to their original numbering.
+Outputs include a set of modified PDB files, a `results/` folder with alignment metadata, and `residue_positions.csv` mapping new residue positions back to their original numbering.
 
 ---
 
@@ -217,13 +219,15 @@ python prep_pdbqt.py
 
 ### Step 6: Generate AutoDock Vina configuration files
 
-Run `generate_config_files.py`, providing the `pdbqt_files` folder as input when prompted. The script will automatically extract gridbox dimensions and flexible residue information from existing files, provided they have not been moved from their original locations:
+Run `generate_config_files.py` to create a Vina configuration file for each receptor:
 
 ```
 python generate_config_files.py
 ```
 
-A configuration file will be generated for each receptor. Recommended settings:
+The script auto-resolves the `pdbqt_files/` directory from the project config. Gridbox dimensions are extracted automatically from the reference PDB file and ligand residue name (both read from `project_config.json`); a manual fallback is available if needed. Flexible residue assignments are loaded automatically from `results/flex_residues.txt`. Docking parameters are read from the project config if previously entered, or prompted once and saved.
+
+Recommended settings:
 
 | Parameter | Recommended Value |
 |-----------|------------------|
@@ -233,59 +237,73 @@ A configuration file will be generated for each receptor. Recommended settings:
 
 ---
 
-### Step 7: Run docking simulations
+### Step 7: Run docking simulations and generate models
 
-Ensure the prepared ligand PDBQT file is in the `pdbqt_files` folder, then run:
+Ensure the prepared ligand PDBQT file is in the `pdbqt_files/` folder, then run:
 
 ```
 python run_vina_batch.py
 ```
 
-Results are written to a `vina_output/` folder. Docked pose PDB models are stored in `vina_output/models/`. It is recommended to move the `models/` folder to your main project directory for easier access in subsequent steps.
+This script handles the complete post-docking workflow in one step: it runs AutoDock Vina for all configuration files, selects the pose with the lowest RMSD relative to the reference ligand (using the Hungarian algorithm for optimal atom matching), converts the selected pose to PDB format, and writes a summary of results.
+
+Outputs:
+- `docking_results/` — Vina output PDBQT files for the selected pose per receptor
+- `docking_results/models/` — combined PDB models (protein + ligand) for each docked complex
+- `results/docking_scores.csv` — binding affinities and ligand RMSD values for all receptors
 
 ---
 
-### Step 8: Calculate ligand RMSD
+### Step 8: Calculate ligand RMSD (optional)
 
-Run `ligand_rmsd.py`, providing the `models/` directory path when prompted. This calculates the RMSD between each docked ligand pose and the reference ligand:
+**This step is optional.** Ligand RMSD values are computed automatically during Step 7 and stored in `results/docking_scores.csv`. Running `ligand_rmsd.py` is only necessary if you want the RMSD histogram (`ligand_rmsd.png`):
 
 ```
 python ligand_rmsd.py
 ```
 
+The script reads model PDB files from `docking_results/models/` (resolved from the project config) and writes `ligand_rmsd.txt` and `ligand_rmsd.png` to `results/`.
+
 ---
 
 ### Step 9: Calculate binding pocket similarity scores
 
-Run `run_ppsalign.py`, providing the `models/` directory path when prompted. This extracts binding pocket structures from each docked complex and computes PPS-scores (binding pocket similarity scores) relative to the reference using PPSalign:
+Run `run_ppsalign.py` to extract binding pocket structures from each docked complex and compute PPS-scores (binding pocket similarity scores) relative to the reference using PPSalign:
 
 ```
 python run_ppsalign.py
 ```
 
-Output is written to a `PPS_files/` folder containing PPS-score data for each model.
+The models directory is resolved automatically from the project config. Output is written to `results/PPS_files/`.
 
 ---
 
 ### Step 10: Calculate protein-ligand interaction fingerprints (PLIFs)
 
-Run `plip_plif.py`, providing the `models/` directory path when prompted. This uses the [PLIP tool](https://plip-tool.biotec.tu-dresden.de/plip-web/plip/index) to identify protein-ligand interactions (hydrogen bonds, hydrophobic contacts, etc.) and a custom distance-based algorithm to detect van der Waals interactions. A PLIF is generated for each docked model, and Tanimoto similarity to the reference structure PLIF is calculated:
+Run `plip_plif.py` to identify protein-ligand interactions and compute PLIF Tanimoto similarity scores. This uses the [PLIP tool](https://plip-tool.biotec.tu-dresden.de/plip-web/plip/index) to detect hydrogen bonds, hydrophobic contacts, and other interaction types, and a custom distance-based algorithm to detect van der Waals interactions. A PLIF is generated for each docked model, and Tanimoto similarity to the reference structure PLIF is calculated:
 
 ```
 python plip_plif.py
 ```
 
+The models directory is resolved from the project config. The PLIF Tanimoto summary (`plif_similarity_summary.csv`) is written to `results/`.
+
 ---
 
 ### Step 11: Generate summary report
 
-Run `get_summary.py` and respond to the prompts to consolidate all docking metrics into a single summary file. You will be asked to specify the locations of the Vina output files, PPS-score file, ligand RMSD file, and PLIF Tanimoto matrix, as well as the name of the reference model and the desired output directory:
+Run `get_summary.py` to consolidate all docking metrics into a single summary file:
 
 ```
 python get_summary.py
 ```
 
-The summary file serves as the sole input to the final susceptibility analysis step.
+No file path prompts are issued. All inputs are resolved automatically from the `results/` directory:
+- `results/docking_scores.csv` — binding affinities and ligand RMSD (required; generated by Step 7)
+- `results/PPS_files/` — PPS-score data (optional; generated by Step 9)
+- `results/plif_similarity_summary.csv` — PLIF Tanimoto values (optional; generated by Step 10)
+
+Output: `results/<ligand>_summary.csv`. This file is the sole input to the final susceptibility analysis step. Because RMSD is read directly from `docking_scores.csv`, Step 8 does not need to be run before this step.
 
 ---
 
@@ -297,7 +315,14 @@ Run `susceptibility_analysis.py` using the summary report generated in the previ
 python susceptibility_analysis.py
 ```
 
-You will be prompted to specify the name of your reference species (or PDB ID, if the filename was not updated) and whether to apply permissive thresholding (see below).
+The summary CSV is located automatically from `results/`. You will be prompted to specify the name of your reference species (or PDB ID, if the filename was not updated) and whether to apply permissive thresholding (see below).
+
+Output is written to `results/susceptibility_analysis/` and includes:
+- `species_summary.csv` — per-species confidence levels and Mahalanobis distances
+- `per_model_results.csv` — per-model metric values and pass/fail status
+- `pca_plot.png` — PCA visualization of metric space
+- `outliers_removed.csv` — models excluded from analysis as outliers
+- `analysis_summary.txt` — plain-text summary of results
 
 **Confidence thresholds**
 
