@@ -1,13 +1,7 @@
 """
-Integrated PLIP Analysis and PLIF Generation Pipeline
-
-Workflow:
-1. Runs PLIP on all PDB files in specified directory
-2. Processes protonated structures with OpenBabel
-3. Organizes PLIP outputs (XML and protonated PDB files)
-4. Automatically generates PLIFs for all test structures vs reference
-5. Calculates Tanimoto similarity coefficients
-6. Creates organized output with individual comparisons and summary table
+PLIP analysis + PLIF generation: run PLIP on all models, build per-structure
+interaction fingerprints (PLIP interactions + van der Waals contacts), and score each
+test structure's Tanimoto similarity to the reference (with a summary table + heatmap).
 """
 
 import os
@@ -23,40 +17,19 @@ from utils import euclidean3d, check_tools
 
 def run_plip_analysis(dir_path, results_dir=None):
     """
-    Run PLIP on all PDB files in the specified directory and organize results.
-    
-    Parameters:
-    -----------
-    dir_path : str
-        Path to directory containing PDB files to analyze
-    
-    Returns:
-    --------
-    str
-        Path to the PLIP_results directory containing XML and protonated PDB files
-    
-    Methodology:
-    -----------
-    PLIP (Protein-Ligand Interaction Profiler) detects non-covalent interactions
-    including hydrogen bonds, hydrophobic contacts, pi-stacking, salt bridges, etc.
-    The -xv flag generates XML output with detailed interaction geometry, and --name
-    ensures consistent file naming for downstream processing.
-    
-    OpenBabel is used to add hydrogens to the protonated structures, which is
-    necessary for accurate representation of hydrogen bonding and protonation states
-    that may vary between species or pH conditions.
+    Run PLIP (`-xv` XML output) on every PDB in dir_path, add hydrogens to the
+    protonated structures with OpenBabel, and move the XML + protonated PDBs into a
+    results directory. Returns the PLIP_results directory path.
     """
     print("\n" + "=" * 70)
     print("Running PLIP Analysis")
     print("=" * 70)
     
-    # Change to specified directory
-    os.chdir(dir_path)
-    
-    # Run PLIP on all PDB files
+    # Run PLIP on all PDB files. cwd=dir_path makes PLIP read/write there without
+    # mutating the process-wide working directory.
     pdb_files = [f for f in os.listdir(dir_path) if f.endswith(".pdb")]
     print(f"\nFound {len(pdb_files)} PDB files to analyze")
-    
+
     for file in pdb_files:
         base_name = os.path.splitext(file)[0]
         try:
@@ -64,13 +37,12 @@ def run_plip_analysis(dir_path, results_dir=None):
             subprocess.run(
                 ["plip", "-f", file, "-xv", "--name", base_name],
                 check=True,
-                capture_output=True
+                capture_output=True,
+                cwd=dir_path,
             )
         except subprocess.CalledProcessError as e:
             print(f"  Error processing {file}: {e}")
-        except Exception as e:
-            print(f"  Unexpected error processing {file}: {e}")
-    
+
     # Process protonated files with OpenBabel
     print("\nProcessing protonated structures with OpenBabel...")
     protonated_files = [f for f in os.listdir(dir_path) if f.endswith('_protonated.pdb')]
@@ -78,7 +50,8 @@ def run_plip_analysis(dir_path, results_dir=None):
         print(f"  Adding hydrogens to {file}...")
         subprocess.run(
             ["obabel", file, "-o", "pdb", "-O", file, "-h"],
-            capture_output=True
+            capture_output=True,
+            cwd=dir_path,
         )
     
     # Create and organize results directory (caller can override via results_dir)
@@ -107,20 +80,10 @@ def run_plip_analysis(dir_path, results_dir=None):
 
 def parse_plip_xml(xml_file):
     """
-    Parse PLIP XML output and return DataFrame with residue number, 
-    residue type, and interaction type for each interaction.
-    
-    Methodology:
-    -----------
-    PLIP organizes interactions by type in the XML structure. We extract all
-    interaction types and represent them at the residue level (not atom level)
-    because residue-level patterns are more stable across species than specific
-    atom positions, which can vary due to side-chain conformations.
-    
-    Duplicates are removed because we want to know IF a residue participates
-    in each interaction type, not HOW MANY times. This creates a binary
-    fingerprint that's more robust to minor structural differences that can
-    exist between species.
+    Parse a PLIP XML report into a DataFrame of (resnr, restype, interaction_type).
+    Interactions are recorded at the residue level and de-duplicated to a binary
+    "does this residue participate in this interaction type?" — more robust across
+    species than atom-level positions.
     """
     tree = ET.parse(xml_file)
     root = tree.getroot()
@@ -172,30 +135,10 @@ def parse_plip_xml(xml_file):
 
 def get_vdw_contacts(pdb_file, ligand_name):
     """
-    Calculate van der Waals contacts between protein and ligand.
-    
-    Parameters:
-    -----------
-    pdb_file : str
-        Path to protonated PDB file
-    ligand_name : str
-        Ligand identifier as found in HETATM records
-    
-    Returns:
-    --------
-    DataFrame
-        van der Waals contacts with residue number, type, and interaction type
-    
-    Methodology:
-    -----------
-    VDW contacts are detected by comparing inter-atomic distances to the sum of
-    VDW radii plus a 0.6 Å tolerance. This captures weak contacts that may not
-    form classical interaction types but still contribute to binding affinity.
-    
-    This is particularly important for cross-species comparisons because even if
-    specific H-bonds or salt bridges differ due to sequence variation, conserved
-    VDW contacts can indicate similar binding modes. The tolerance of 0.6 Å
-    accounts for thermal fluctuations and coordinate uncertainty.
+    Detect protein-ligand van der Waals contacts (inter-atomic distance < sum of VDW
+    radii + 0.6 Å tolerance), returned as a (resnr, restype, interaction_type) DataFrame.
+    Captures weak contacts that classical interaction types miss but that can still
+    indicate a conserved binding mode across species.
     """
     vdw_radii = {"H": 1.2, "C": 1.7, "N": 1.55, "O": 1.52, "S": 1.8}
     protein_coordinates = []
@@ -261,39 +204,14 @@ def get_vdw_contacts(pdb_file, ligand_name):
 
 def merge_plifs(ref_df, test_df):
     """
-    Merge reference and test PLIFs to create comparison fingerprint.
-    
-    Parameters:
-    -----------
-    ref_df : DataFrame
-        Reference PLIF with resnr, restype, interaction_type
-    test_df : DataFrame
-        Test PLIF with resnr, restype, interaction_type
-    
-    Returns:
-    --------
-    DataFrame
-        Merged fingerprint with binary columns indicating presence in ref/test
-    
-    Methodology:
-    -----------
-    Matching key: restype + interaction_type (NOT resnr).
+    Merge reference and test PLIFs into a binary comparison fingerprint with `ref`/`test`
+    presence columns.
 
-    In a cross-species pipeline each receptor has its own native residue
-    numbering, so a conserved binding residue (e.g. LEU in the androgen
-    receptor binding pocket) will have a different sequence number in every
-    species.  Merging on residue number would therefore never find a match and
-    would always produce Tanimoto = 0.
-
-    By collapsing to unique (restype, interaction_type) pairs before merging,
-    we ask the biologically meaningful question: "does this species form a
-    hydrogen bond with a THR residue?" rather than "does residue 710 form a
-    hydrogen bond?".  This is the standard approach for cross-species PLIF
-    comparison.
-
-    Rows in the output retain the reference residue number (resnr) for display
-    purposes so the output file can still be used to trace interactions back to
-    specific positions in the reference structure.
+    Matching key is (restype, interaction_type), NOT resnr: each species has its own
+    residue numbering, so merging on residue number would never match a conserved
+    residue and always give Tanimoto = 0. Collapsing to unique (restype, interaction_type)
+    pairs asks "does this species form a hydrogen bond with a THR?" — the standard
+    cross-species PLIF comparison. The reference resnr is retained for display.
     """
     # Collapse to one row per (restype, interaction_type) per structure.
     # If multiple same-type residues make the same interaction class, only the
@@ -352,18 +270,8 @@ def merge_plifs(ref_df, test_df):
 
 def calculate_tanimoto(plif_df):
     """
-    Calculate Tanimoto similarity coefficient from merged PLIF DataFrame.
-    
-    Methodology:
-    -----------
-    Tanimoto coefficient (also called Jaccard index for binary data) measures
-    similarity as: (shared features) / (total unique features)
-
-        Tanimoto = |A ∩ B| / |A ∪ B|
-
-    The coefficient ranges from 0 (no overlap) to 1 (perfect match), providing
-    an intuitive measure of binding site similarity across species.
-    
+    Tanimoto/Jaccard similarity of the merged PLIF: |ref ∩ test| / |ref ∪ test|,
+    from 0 (no overlap) to 1 (identical).
     """
     both  = int(((plif_df["ref"] == 1) & (plif_df["test"] == 1)).sum())
     either = int(((plif_df["ref"] == 1) | (plif_df["test"] == 1)).sum())
@@ -586,34 +494,17 @@ def generate_heatmap(all_plifs, ref_df, ref_name, output_dir, tanimoto_scores=No
 
 def generate_plifs(plip_results_dir, ligand_name, ref_pdb=None, summary_dir=None):
     """
-    Generate PLIFs for all test structures compared to reference.
-    
-    Parameters:
-    -----------
-    plip_results_dir : str
-        Path to directory containing PLIP XML and protonated PDB files
-    ligand_name : str
-        Ligand identifier as found in HETATM records
-    ref_pdb : str, optional
-        Name of reference PDB file (if None, will prompt user)
-    
-    Returns:
-    --------
-    DataFrame
-        Summary table with Tanimoto similarities for all comparisons
-    
-    Methodology:
-    -----------
-    This function implements the core PLIF comparison workflow.
-    
-    Individual PLIF comparison files are saved for further inspection.
+    Build a PLIF for every test structure vs the reference (auto-detected by "ref_"
+    prefix if ref_pdb is None), compute Tanimoto similarities, and write a summary table,
+    per-comparison PLIF files, and a heatmap. Returns the summary DataFrame.
     """
     print("\n" + "=" * 70)
     print("Generating Protein-Ligand Interaction Fingerprints")
     print("=" * 70)
-    
-    os.chdir(plip_results_dir)
-    
+
+    # The caller runs this inside `with pushd(plip_results_dir)`, so the working
+    # directory is already plip_results_dir; files below are opened by basename.
+
     # Find reference PDB file if not specified
     if ref_pdb is None:
         pdb_files = [i for i in os.listdir(plip_results_dir) 
@@ -771,26 +662,7 @@ def generate_plifs(plip_results_dir, ligand_name, ref_pdb=None, summary_dir=None
 
 
 def main():
-    """
-    Main integrated workflow for PLIP analysis and PLIF generation.
-    
-    Workflow:
-    1. User provides directory with PDB files (reference + test structures)
-    2. PLIP analysis runs on all structures, generating XML reports
-    3. Protonated structures are processed with OpenBabel
-    4. Results are organized into plip_results directory
-    5. User specifies ligand ID and confirms reference structure
-    6. PLIFs are generated for all test structures vs reference
-    7. Summary table with Tanimoto similarities is created
-    8. Individual comparison files are organized for detailed inspection
-    
-    Benefits of integration:
-    - Reduces manual steps and potential for user error
-    - Maintains consistent directory structure throughout workflow
-    - Provides continuous progress feedback across both stages
-    - Ensures all intermediate files are properly organized
-    - Allows for error handling across the entire pipeline
-    """
+    """Run PLIP analysis then PLIF generation on the project's docked models."""
     check_tools(["plip", "obabel"])
     print("\n" + "=" * 70)
     print("PLIP ANALYSIS AND PLIF GENERATION PIPELINE")
@@ -802,7 +674,7 @@ def main():
     print("4. Calculate Tanimoto similarity coefficients")
     print("5. Create organized output files for analysis")
 
-    from utils import resolve_project_dir, load_config, save_config, get_project_paths
+    from utils import resolve_project_dir, load_config, save_config, get_project_paths, pushd
 
     project_dir = resolve_project_dir()
     config = load_config(project_dir)
@@ -833,9 +705,12 @@ def main():
     else:
         ligand = input("\nEnter the ligand ID as it appears in the PDB models (e.g., 'UNL', 'LIG'): ")
     
-    # Generate PLIFs — write summary CSV directly to results/
-    results_df = generate_plifs(plip_results_dir, ligand,
-                                summary_dir=paths["results"])
+    # Generate PLIFs — write summary CSV directly to results/.
+    # pushd makes plip_results_dir the working directory (generate_plifs opens
+    # files by basename) and restores the original directory on exit.
+    with pushd(plip_results_dir):
+        results_df = generate_plifs(plip_results_dir, ligand,
+                                    summary_dir=paths["results"])
     
     print("\n" + "=" * 70)
     print("PIPELINE COMPLETE")

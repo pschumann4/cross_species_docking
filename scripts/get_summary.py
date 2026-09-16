@@ -6,10 +6,12 @@ All data sources are resolved automatically from the project's results/ director
     results/PPS_files/*_PPS.txt         — PPS-Score values                (optional)
     results/plif_similarity_summary.csv — PLIF Tanimoto                   (optional)
 
-lig_rmsd is read directly from the selected_mode_rmsd_A column of docking_scores.csv.
-run_vina_batch.py already computes this value (Hungarian-algorithm RMSD vs reference)
-while selecting the best pose, so running ligand_rmsd.py first is not required.
-ligand_rmsd.py remains useful only if you want the RMSD histogram (ligand_rmsd.png).
+binding_affinity and lig_rmsd are read from the binding_affinity_kcal_mol and
+lig_rmsd_A columns of docking_scores.csv. Both describe Vina's rank-1 (best-scored)
+pose — the same pose the model PDB, PLIF and PPS are derived from — so all four
+metrics describe one physical binding event. run_vina_batch.py computes lig_rmsd
+(Hungarian-algorithm RMSD vs reference), so running ligand_rmsd.py first is not
+required; it remains useful only for the RMSD histogram (ligand_rmsd.png).
 
 Output: results/<ligand>_summary.csv
 No user prompts are issued — missing optional sources are skipped with a warning.
@@ -18,6 +20,48 @@ No user prompts are issued — missing optional sources are skipped with a warni
 import os
 import sys
 import pandas as pd
+
+# Pipeline-added filename suffixes, stripped (longest first) to recover the
+# canonical protein key shared across all three data sources. The protein name
+# in docking_scores.csv (e.g. "Chicken_AR_modified_ensemble_1") is the key;
+# PLIF rows carry a trailing "_model" and PPS files additionally carry
+# "_bindingsite" plus the "_PPS" stem, so those must be removed before joining.
+_PROTEIN_KEY_SUFFIXES = ("_bindingsite", "_model")
+
+
+def canonical_protein_key(name):
+    """
+    Reduce a PLIF test_structure name or PPS file stem to the canonical protein
+    key used in docking_scores.csv by stripping pipeline-added suffixes from the
+    end. Idempotent for names that are already canonical.
+    """
+    key = name
+    changed = True
+    while changed:
+        changed = False
+        for suffix in _PROTEIN_KEY_SUFFIXES:
+            if key.endswith(suffix):
+                key = key[: -len(suffix)]
+                changed = True
+    return key
+
+
+def _warn_unmatched(source, protein_keys, value_map):
+    """
+    Warn about join mismatches between docking_scores proteins and an optional
+    source, in both directions:
+      - proteins with no value in this source (left as NaN)
+      - source entries that matched no protein (silently dropped without this)
+    """
+    proteins = set(protein_keys)
+    missing_for_protein = [k for k in protein_keys if k not in value_map]
+    orphan_source_keys  = [k for k in value_map if k not in proteins]
+    if missing_for_protein:
+        print(f"  ⚠ {source}: {len(missing_for_protein)} protein(s) have no value "
+              f"(left blank): {', '.join(missing_for_protein)}")
+    if orphan_source_keys:
+        print(f"  ⚠ {source}: {len(orphan_source_keys)} entry(ies) matched no protein "
+              f"and were ignored: {', '.join(orphan_source_keys)}")
 
 
 def get_summary():
@@ -55,6 +99,18 @@ def get_summary():
     scores_df = pd.read_csv(scores_csv).sort_values("protein").reset_index(drop=True)
     print(f"\n[1/4] Docking scores loaded — {len(scores_df)} protein(s)")
 
+    # Require the canonical-pose columns. Older docking_scores.csv files used
+    # best_affinity_kcal_mol / selected_mode_rmsd_A, where affinity (mode 1) and
+    # RMSD (best-RMSD mode) described different poses; refuse those rather than
+    # silently mixing incoherent metrics.
+    required_score_cols = {"binding_affinity_kcal_mol", "lig_rmsd_A"}
+    missing_score_cols = required_score_cols - set(scores_df.columns)
+    if missing_score_cols:
+        print(f"\nERROR: docking_scores.csv is missing column(s): {sorted(missing_score_cols)}")
+        print("It looks like it was produced by an older run_vina_batch.py.")
+        print("Re-run run_vina_batch.py so all four metrics describe the same (rank-1) pose.")
+        return
+
     # Parse species and ensemble number from protein name.
     # Examples:
     #   "Chicken_AR_modified_ensemble_1" → species="Chicken", ensemble=1
@@ -65,50 +121,60 @@ def get_summary():
         for row in scores_df["protein"]
     ]
 
-    # lig_rmsd comes directly from docking_scores.csv (selected_mode_rmsd_A).
-    # run_vina_batch.py already computes this via the Hungarian algorithm while
-    # selecting the best-RMSD pose; ligand_rmsd.py would recompute the same
-    # number from the saved model PDB, so there is no reason to run it first.
+    # binding_affinity and lig_rmsd both come from the canonical (mode-1) pose,
+    # the same pose the model PDB — and thus the PLIF and PPS metrics — are built
+    # from, so all four metrics describe one physical binding event.
+    #
+    # The protein column is the canonical key. PPS and PLIF values are joined
+    # onto it BY KEY (not by row position) so that differing sort orders or a
+    # protein missing from one optional source can never silently shift a metric
+    # onto the wrong species.
+    protein_keys = scores_df["protein"].tolist()
     summary_df = pd.DataFrame({
         "binding_model":    range(1, len(scores_df) + 1),
         "species":          species,
         "ensemble":         ensembles,
-        "binding_affinity": scores_df["best_affinity_kcal_mol"].tolist(),
-        "lig_rmsd":         scores_df["selected_mode_rmsd_A"].tolist(),
+        "binding_affinity": scores_df["binding_affinity_kcal_mol"].tolist(),
+        "lig_rmsd":         scores_df["lig_rmsd_A"].tolist(),
         "ppsscore":         None,
         "plif_tanimoto":    None,
     })
-    print(f"      lig_rmsd pulled from selected_mode_rmsd_A column")
+    print(f"      binding_affinity and lig_rmsd taken from the rank-1 pose")
 
     # ── 2. PPS-Scores (optional) ──────────────────────────────────────────────
     pps_dir = os.path.join(details, "PPS_files")
     if os.path.isdir(pps_dir):
-        pps_files = sorted(f for f in os.listdir(pps_dir) if f.endswith("_PPS.txt"))
-        ppsscores = []
-        for fname in pps_files:
+        pps_map = {}
+        for fname in sorted(f for f in os.listdir(pps_dir) if f.endswith("_PPS.txt")):
+            key = canonical_protein_key(fname[: -len("_PPS.txt")])
             with open(os.path.join(pps_dir, fname)) as f:
                 lines = f.readlines()
             try:
                 # PPS-Score is on the third line (index 2), third whitespace-separated token
-                ppsscores.append(lines[2].split()[2])
+                pps_map[key] = lines[2].split()[2]
             except (IndexError, ValueError) as e:
                 print(f"  Warning: could not parse PPS score from {fname}: {e}")
-                ppsscores.append(None)
-        summary_df["ppsscore"] = ppsscores
-        print(f"[2/3] PPS-Scores loaded — {len(ppsscores)} file(s)")
+                pps_map[key] = None
+
+        summary_df["ppsscore"] = [pps_map.get(k) for k in protein_keys]
+        matched = sum(1 for k in protein_keys if k in pps_map)
+        print(f"[2/3] PPS-Scores loaded — {len(pps_map)} file(s), {matched}/{len(protein_keys)} matched to proteins")
+        _warn_unmatched("PPS", protein_keys, pps_map)
     else:
         print(f"[2/3] PPS_files/ not found in results/ — ppsscore column left blank")
 
     # ── 3. PLIF Tanimoto (optional) ───────────────────────────────────────────
     plif_file = os.path.join(details, "plif_similarity_summary.csv")
     if os.path.exists(plif_file):
-        plif_df = (
-            pd.read_csv(plif_file)
-              .sort_values("test_structure")
-              .reset_index(drop=True)
-        )
-        summary_df["plif_tanimoto"] = plif_df["tanimoto_similarity"].values
-        print(f"[3/3] PLIF Tanimoto loaded — {len(plif_df)} value(s)")
+        plif_df = pd.read_csv(plif_file)
+        plif_map = {
+            canonical_protein_key(str(ts)): tan
+            for ts, tan in zip(plif_df["test_structure"], plif_df["tanimoto_similarity"])
+        }
+        summary_df["plif_tanimoto"] = [plif_map.get(k) for k in protein_keys]
+        matched = sum(1 for k in protein_keys if k in plif_map)
+        print(f"[3/3] PLIF Tanimoto loaded — {len(plif_map)} value(s), {matched}/{len(protein_keys)} matched to proteins")
+        _warn_unmatched("PLIF", protein_keys, plif_map)
     else:
         print(f"[3/3] plif_similarity_summary.csv not found in results/ — plif_tanimoto column left blank")
 

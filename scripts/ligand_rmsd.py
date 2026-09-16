@@ -4,7 +4,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from utils import parse_hetatm_coords, rmsd_hungarian
+from utils import parse_hetatm_coords, rmsd_hungarian, prompt_yes_no
 
 
 def ligand_rmsd():
@@ -28,7 +28,7 @@ def ligand_rmsd():
     - ligand_rmsd.png  — histogram of RMSD values.
     """
     from utils import (resolve_project_dir, load_config, save_config,
-                       get_project_paths, resolve_reference_pdb)
+                       get_project_paths, resolve_reference_pdb, pushd)
 
     project_dir = resolve_project_dir()
     config = load_config(project_dir)
@@ -45,11 +45,22 @@ def ligand_rmsd():
     else:
         print(f"\nUsing models directory: {pdb_dir}")
 
-    os.chdir(pdb_dir)
-
     # Output always goes to the project results/ directory
     output_dir = paths["results"]
     os.makedirs(output_dir, exist_ok=True)
+
+    # pushd restores the original working directory on exit; the model/reference
+    # PDBs are opened by basename below, which relies on cwd being pdb_dir.
+    with pushd(pdb_dir):
+        _compute_and_write_rmsd(pdb_dir, output_dir, config)
+
+
+def _compute_and_write_rmsd(pdb_dir, output_dir, config):
+    """Compute per-model ligand RMSD vs the reference and write txt + histogram.
+
+    Assumes the working directory is pdb_dir (model/reference PDBs are opened by
+    basename).
+    """
 
     # ── Locate reference PDB ──────────────────────────────────────────────────
     pdb_files = [i for i in os.listdir(pdb_dir) if i.endswith(".pdb")]
@@ -62,16 +73,14 @@ def ligand_rmsd():
         print(f"Using reference PDB from config: {ref_pdb}")
     else:
         # Fall back to interactive scan for ref_ files
-        ref = "n"
+        ref_found = False
         for file in pdb_files:
             if file.startswith("ref_"):
-                ref = input(f"Is {file} the reference PDB file? (y/n): ").lower()
-                while ref not in ["y", "n"]:
-                    ref = input("Please enter y or n: ")
-                if ref == "y":
+                if prompt_yes_no(f"Is {file} the reference PDB file? (y/n): "):
                     ref_pdb = file
+                    ref_found = True
                     break
-        if ref == "n":
+        if not ref_found:
             ref_pdb = input("Enter the name of the reference PDB file (if none, type 'random'): ")
             if not ref_pdb.endswith(".pdb"):
                 ref_pdb += ".pdb"
@@ -154,7 +163,7 @@ def ligand_rmsd():
         patch.set_edgecolor("black")
     plt.tight_layout()
     plt.savefig(os.path.join(output_dir, "ligand_rmsd.png"), dpi=300)
-    plt.show()
+    plt.close()
 
 
 if __name__ == "__main__":

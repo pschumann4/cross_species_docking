@@ -2,8 +2,12 @@
 get_test_structures.py
 ==============================
 Fetches orthologs of a reference protein via OrthoDB, maps them to UniProt
-accessions using direct cross-reference lookups, then retrieves AlphaFold 
+accessions using direct cross-reference lookups, then retrieves AlphaFold
 structures where available.
+
+AlphaFold models whose mean pLDDT is at or below MIN_PLDDT (default 50 on the
+0-100 pLDDT scale) are skipped — neither downloaded nor recorded in the metadata
+CSV — so poorly-predicted structures do not enter the pipeline.
 
 Outputs
 -------
@@ -34,6 +38,36 @@ UNIPROT_BASE    = "https://rest.uniprot.org/uniprotkb"
 
 RATE_LIMIT_DELAY   = 0.4    # seconds between API calls
 MAX_ORTHOLOGS      = 500    # safety cap -- orthogroups can be very large
+
+# Minimum acceptable mean pLDDT for an AlphaFold model. pLDDT is on a 0-100
+# scale (the API's confidence_avg_local_score), where < 50 is AlphaFold's "very
+# low confidence" band. Models at or below this are skipped — not downloaded or
+# recorded — so poorly-predicted structures never enter the pipeline.
+MIN_PLDDT          = 50.0
+
+
+def plddt_gate(confidence_type, confidence_score, threshold=MIN_PLDDT):
+    """
+    Decide whether an AlphaFold entry passes the mean-pLDDT gate.
+
+    Returns (keep: bool, reason: str).
+      - Numeric pLDDT score <= threshold      -> drop (low confidence).
+      - Numeric pLDDT score >  threshold       -> keep.
+      - Missing/unparseable score, or a non-pLDDT confidence type -> keep, since
+        the gate cannot be assessed; the reason explains why.
+    """
+    ctype = (confidence_type or "").strip().lower()
+    if confidence_score == "" or confidence_score is None:
+        return True, "no confidence score — cannot assess, kept"
+    try:
+        score = float(confidence_score)
+    except (TypeError, ValueError):
+        return True, f"unparseable confidence score '{confidence_score}' — kept"
+    if ctype and ctype != "plddt":
+        return True, f"confidence type '{confidence_type}' is not pLDDT — gate not applied, kept"
+    if score <= threshold:
+        return False, f"mean pLDDT {score:.1f} <= {threshold:.0f} — skipped"
+    return True, f"mean pLDDT {score:.1f}"
 
 
 def get_json(url, params=None, retries=3):
@@ -293,25 +327,9 @@ def download_structure(model_url, output_path):
 
 def convert_cif_to_pdb(cif_path):
     """
-    Convert a CIF file to PDB format using Open Babel (obabel).
-
-    Open Babel is invoked as a subprocess:
-        obabel input.cif -O output.pdb
-
-    The -O flag specifies the output file; obabel infers the output format
-    from the extension. We do not pass -h (add hydrogens) or any other
-    modification flags because we want to preserve the original coordinates
-    exactly as deposited.
-
-    On success:
-      - The new .pdb file exists on disk
-      - The original .cif file is deleted to avoid accumulating redundant files
-      - Returns the Path to the new .pdb file
-
-    On failure (obabel not found, non-zero exit code, or output not created):
-      - Prints a warning and returns the original cif_path unchanged so the
-        caller can still record the CIF file in the metadata CSV rather than
-        losing track of it entirely.
+    Convert a CIF to PDB with obabel (no -h, to preserve deposited coordinates),
+    deleting the CIF on success. Returns the new .pdb path on success, or the original
+    cif_path unchanged on failure (so the caller can still record it).
     """
     pdb_path = cif_path.with_suffix(".pdb")
     try:
@@ -367,19 +385,10 @@ def write_csv(path, fieldnames, rows):
 
 def main():
     """
-    Main execution flow:
-    1. Prompt user for UniProt ID, taxon ID, and protein code.
-    2. Use /genesearch to find the OrthoDB gene param for the reference protein.
-    3. Use /orthologs to retrieve orthologs, filtering by taxon if specified.
-    3b. For each unique taxon ID among the orthologs, query NCBI taxonomy to get
-        the scientific name and populate it on the ortholog records.
-    4. For each ortholog, attempt to resolve a UniProt ID via the /gene xref
-        lookup. Store the resolution method and result on the ortholog record.
-    5. For each resolved UniProt ID, query the AlphaFold API for associated
-        structures. Download each structure file, convert from CIF to PDB if
-        needed, and rename to a consistent "[Genus-species]_[protein_code].pdb" format.
-        Save OrthoDB-level data for all orthologs to orthodb_orthologs.csv and
-        AlphaFold metadata for resolved structures to alphafold_metadata.csv.
+    Resolve the reference protein to OrthoDB orthologs, map each to a UniProt
+    accession, then download their AlphaFold structures (CIF→PDB, renamed to
+    "[Genus-species]_[protein_code].pdb", skipping mean pLDDT <= MIN_PLDDT). Writes
+    orthodb_orthologs.csv and alphafold_metadata.csv. (Steps are labeled in the body.)
     """
     # ------------------------------------------------------------------
     # Step 1: User input
@@ -445,6 +454,9 @@ def main():
     print(f"\n[Step 5] Querying AlphaFold DB for {len(resolved)} UniProt ID(s)...")
     AF_STRUCT_DIR.mkdir(exist_ok=True)
     af_records = []
+    skipped_low_plddt = 0
+
+    print(f"  (Skipping models with mean pLDDT <= {MIN_PLDDT:.0f})")
 
     for i, orth in enumerate(resolved, 1):
         uid = orth["uniprot_id"]
@@ -459,6 +471,15 @@ def main():
         for entry in entries:
             model_id  = entry["model_id"]
             model_url = entry["model_url"]
+
+            # pLDDT confidence gate — applied BEFORE download so low-confidence
+            # models are never fetched or recorded.
+            keep, reason = plddt_gate(entry.get("confidence_type", ""),
+                                      entry.get("confidence_score", ""))
+            if not keep:
+                print(f"    [SKIP] {model_id}: {reason}")
+                skipped_low_plddt += 1
+                continue
 
             # Build a sanitised species slug from the scientific name.
             # "Homo sapiens" → "Homo-sapiens"; fall back to taxon_id if blank.
@@ -545,6 +566,7 @@ def main():
     print(f"  Orthologs queried       : {len(orthologs)}")
     print(f"  UniProt IDs resolved    : {len(resolved)}")
     print(f"  AlphaFold structures    : {len(af_records)}")
+    print(f"  Skipped (pLDDT <= {MIN_PLDDT:.0f}) : {skipped_low_plddt}")
     print(f"  OrthoDB CSV             : {ORTHODB_CSV}")
     if af_records:
         print(f"  AlphaFold metadata CSV  : {ALPHAFOLD_CSV}")

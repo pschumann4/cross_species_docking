@@ -1,28 +1,15 @@
 """
 run_tmalign.py
-==============================
-TM-align for evaluating structural similarity of test models to a reference structure.
-This is useful for filtering out poor models before docking, and for assessing the overall quality of the test set.
-The script performs the following steps:
-1. Load and preprocess data - identify PDB files in directory
-2. Identify reference model (prefixed with "ref_")
-3. Run TM-align for each test model against the reference
-4. Extract TM-scores (both normalizations) and alignment statistics
-5. Output results to CSV
-6. Generate KDE density plot with cutoff at 0.5
-TM-score interpretation:
-- TM-score < 0.17: random similarity
-- TM-score ~ 0.5: likely same fold
-- TM-score > 0.5: likely same topology
-- TM-score = 1: identical structures
+TM-align structural-similarity filter: scores each test model against the reference
+(prefixed "ref_") to flag poorly-matching models before docking.
 
-Scores normalized by the reference length (TM-score_norm_ref) that are below 0.5 are
-generally considered to indicate poor structural similarity, while those above 0.5 suggest a reasonable fold match.
+TM-score interpretation: <0.17 random; ~0.5 likely same fold; >0.5 same topology;
+1.0 identical. Models with TM-score_norm_ref < 0.5 are considered poor matches.
 
 Outputs
 -------
-- tm_scores.csv: A CSV file containing TM-scores and alignment statistics for each test model
-- tmscore_density.png: A KDE density plot of TM-score_norm_ref values
+- tm_scores.csv       : TM-scores + alignment stats per test model
+- tmscore_density.png : KDE density plot of TM-score_norm_ref (0.5 cutoff)
 """
 
 import os
@@ -40,12 +27,9 @@ from utils import check_tools
 
 def plot_tmscore_density(scores, output_path, cutoff=0.5):
     """
-    Generate a KDE density plot of TM-scores with a vertical cutoff line.
-
-    The density is estimated via scipy.stats.gaussian_kde, which uses
-    Scott's rule by default to select bandwidth: h = n^(-1/5) * sigma.
-    The area under the curve is split at `cutoff` and filled with
-    distinct colours to make the proportion above/below immediately legible.
+    KDE density plot of TM-scores (scipy gaussian_kde, Scott's-rule bandwidth) with a
+    cutoff line; the area is split at `cutoff` and two-color filled to show the
+    proportion above/below.
 
     Parameters
     ----------
@@ -73,7 +57,7 @@ def plot_tmscore_density(scores, output_path, cutoff=0.5):
     x_grid = np.linspace(0, 1, 500)
     y_grid = kde(x_grid)
 
-    # Split grid at cutoff for two-colour fill
+    # Split grid at cutoff for two-color fill
     mask_fail = x_grid <= CUTOFF
     mask_pass = x_grid >= CUTOFF
 
@@ -146,16 +130,8 @@ def plot_tmscore_density(scores, output_path, cutoff=0.5):
 
 def run_tmalign():    
     """
-    Calculate TM-scores across model directory using TM-align executable,
-    then generate a KDE density plot of TM-score_norm_ref with a 0.5 cutoff line.
-
-    Methodology:
-    1. Load and preprocess data - identify PDB files in directory
-    2. Identify reference model (prefixed with "ref_")
-    3. Run TM-align for each test model against the reference
-    4. Extract TM-scores (both normalizations) and alignment statistics
-    5. Output results to CSV
-    6. Generate KDE density plot with cutoff at 0.5
+    Score every test model against the reference with TM-align, write tm_scores.csv,
+    and plot the TM-score_norm_ref distribution with a 0.5 cutoff.
     """
 
     check_tools(["TMalign"])
@@ -286,7 +262,7 @@ def run_tmalign():
 
     print("\n" + "=" * 60)
     print(f"TM-align complete. Results saved to: {output_csv}")
-    print(f"Total models analysed: {len(results)}")
+    print(f"Total models analyzed: {len(results)}")
     print("=" * 60)
 
     valid_scores = results_df["TM-score_norm_ref"].dropna()

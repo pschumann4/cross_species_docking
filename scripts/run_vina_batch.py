@@ -1,17 +1,6 @@
 """
-Integrated AutoDock Vina batch processing and model generation workflow.
-
-Key improvements:
-1. Fixed file organization - no subdirectories, flat structure for model generation
-2. Top binding mode only - saves only the best pose per simulation
-3. Model generation using obabel for robust PDBQT→PDB conversion
-4. Reference-based HETATM ordering to maintain consistency
-5. Proper element symbol preservation
-
-This script combines:
-1. Batch Vina docking (run_vina_batch.py functionality)
-2. Output processing - extracts ONLY top binding modes
-3. PDBQT-to-PDB model generation with reference structure validation
+Integrated AutoDock Vina workflow: batch docking → rank-1 pose extraction → PDB model
+generation (obabel PDBQT→PDB conversion with reference-based HETATM ordering).
 """
 
 import os
@@ -23,7 +12,16 @@ import shutil
 import time
 from datetime import datetime
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from utils import check_tools, parse_hetatm_coords, rmsd_hungarian
+from utils import check_tools, parse_hetatm_coords, rmsd_hungarian, prompt_yes_no
+
+# vina_split numbers split poses consecutively from 1; this is the upper bound
+# on how many modes to scan for / clean up (Vina's num_modes never approaches it).
+MAX_VINA_MODES = 100
+
+# Residue sequence number stamped onto the docked ligand in generated PDB models
+# so the ligand is unambiguously distinct from protein residues. Must stay 4
+# characters wide to fit PDB columns 23-26.
+LIGAND_RESNUM = "9999"
 
 
 # ============================================================================
@@ -108,20 +106,18 @@ def run_vina(verbose=True):
                 
                 # Ask if user wants to continue
                 if idx < len(config_files):
-                    continue_run = input("\nContinue with remaining files? (y/n): ").lower()
-                    if continue_run != 'y':
+                    if not prompt_yes_no("\nContinue with remaining files? (y/n): "):
                         print("Batch processing stopped by user.")
                         break
                     print()
-                
+
             except Exception as e:
                 print(f"✖ Unexpected error processing {config_file}:")
                 print(str(e))
                 failed.append(config_file)
-                
+
                 if idx < len(config_files):
-                    continue_run = input("\nContinue with remaining files? (y/n): ").lower()
-                    if continue_run != 'y':
+                    if not prompt_yes_no("\nContinue with remaining files? (y/n): "):
                         print("Batch processing stopped by user.")
                         break
                     print()
@@ -165,44 +161,93 @@ def run_vina(verbose=True):
         return False, {}
 
 
+def _parse_vina_affinity(pose_lines):
+    """Return the affinity (kcal/mol) from a pose's REMARK VINA RESULT line, or None."""
+    for line in pose_lines:
+        if line.startswith("REMARK VINA RESULT:"):
+            try:
+                return float(line.split()[3])
+            except (IndexError, ValueError):
+                return None
+    return None
+
+
+def summarize_modes(mode_records):
+    """
+    Reduce per-mode docking results to the canonical-pose metrics plus a
+    best-RMSD diagnostic.
+
+    The canonical pose is ALWAYS mode 1 — Vina writes modes in descending score
+    order, so mode 1 is the best-scored pose. All four downstream metrics
+    (affinity, ligand RMSD, PLIF, PPS) are taken from this single pose so that
+    they describe one physical binding event.
+
+    The pose with the lowest RMSD to the reference is also identified, but only
+    as a diagnostic: it lets a reviewer see when Vina's top-scored pose disagrees
+    with the most reference-like pose. It is NOT used for any reported metric.
+    (This is the deliberate change away from the earlier best-RMSD pose
+    selection, which made the metrics describe different poses and biased the
+    geometric metrics toward the reference — see METHODS_NOTES.md, limitation 1.)
+
+    Parameters
+    ----------
+    mode_records : list[dict]
+        One dict per mode, ordered by Vina rank, each with keys:
+          "mode"     : int  (1-based Vina rank; mode 1 = best score)
+          "affinity" : float | None
+          "rmsd"     : float | None  (None if the pose's atoms did not match the
+                                      reference, so RMSD could not be computed)
+
+    Returns
+    -------
+    dict with keys: rank1_affinity, rank1_rmsd, best_rmsd_mode, best_rmsd,
+        best_rmsd_mode_affinity, pose_divergence.
+    """
+    rank1 = next((r for r in mode_records if r["mode"] == 1), None)
+    rank1_affinity = rank1["affinity"] if rank1 else None
+    rank1_rmsd     = rank1["rmsd"] if rank1 else None
+
+    best = None
+    for r in mode_records:
+        if r["rmsd"] is None:
+            continue
+        if best is None or r["rmsd"] < best["rmsd"]:
+            best = r
+
+    if best is None:
+        return {
+            "rank1_affinity": rank1_affinity,
+            "rank1_rmsd": rank1_rmsd,
+            "best_rmsd_mode": None,
+            "best_rmsd": None,
+            "best_rmsd_mode_affinity": None,
+            "pose_divergence": False,
+        }
+
+    return {
+        "rank1_affinity": rank1_affinity,
+        "rank1_rmsd": rank1_rmsd,
+        "best_rmsd_mode": best["mode"],
+        "best_rmsd": best["rmsd"],
+        "best_rmsd_mode_affinity": best["affinity"],
+        "pose_divergence": best["mode"] != 1,
+    }
+
+
 def process_vina_output_top_mode_only(chemical, reference_pdb, ligand_resname, details_dir=None):
     """
-    Process Vina output files, selecting the pose with the lowest ligand RMSD
-    relative to a reference structure (rather than always taking rank-1).
+    Keep mode 1 (Vina's best-scored pose) as the canonical pose from which ALL four
+    metrics derive: the model PDB (and its downstream PLIF/PPS), the reported affinity,
+    and ligand RMSD all come from this one pose, so they describe one physical state.
+    vina_split produces per-mode files; per-mode RMSD vs the reference ligand is via the
+    Hungarian algorithm. The lowest-RMSD-to-reference mode is recorded only as a
+    diagnostic (best_rmsd_* columns + pose_divergence). Anchoring to the top-scored pose
+    avoids the incoherence of best-case-per-axis metrics — see METHODS_NOTES.md.
 
-    METHODOLOGY:
-    - Splits each Vina output file using vina_split to produce per-mode PDBQT files.
-    - For each mode, reads the ligand PDBQT, extracts heavy-atom coordinates, and
-      computes RMSD vs the reference ligand using the Hungarian algorithm for optimal
-      atom matching.
-    - Keeps the three files (ligand / flex / rigid) for whichever mode had the
-      lowest RMSD and deletes all other modes.
-    - Moves the original multi-mode _bound_ file to vina_output/ as a record.
-
-    Using the best-scoring (rank-1) pose would penalize species whose correct
-    binding mode happened to rank below mode 1 by Vina's scoring function.
-    Selecting by RMSD ensures the saved model always reflects the pose most
-    similar to the reference binding mode, keeping downstream RMSD reporting and
-    evaluation consistent.
-
-    Parameters:
-    -----------
-    chemical : str
-        Name of the ligand file (with or without .pdbqt extension).
-    reference_pdb : str
-        Path to the reference PDB file containing the known ligand binding pose.
-    ligand_resname : str
-        Three-letter residue name of the ligand in the reference PDB (e.g. 'DHT').
-
-    Returns:
-    --------
-    tuple: (success, file_count, output_dir)
-        - success: True if successful, False otherwise
-        - file_count: Number of files processed
-        - output_dir: Path to the vina_output directory
+    Returns (success, file_count, output_dir).
     """
     print(f"\n{'='*70}")
-    print("PROCESSING VINA OUTPUT - BEST-RMSD POSE SELECTION")
+    print("PROCESSING VINA OUTPUT - RANK-1 (BEST-SCORED) POSE")
     print(f"{'='*70}\n")
 
     try:
@@ -237,7 +282,7 @@ def process_vina_output_top_mode_only(chemical, reference_pdb, ligand_resname, d
             return False, 0, output_folder
 
         print(f"Found {len(pdbqt_files)} output file(s) to process")
-        print(f"Selecting best-RMSD pose for each file...\n")
+        print(f"Using rank-1 (best-scored) pose for each file...\n")
 
         processed_count = 0
         score_rows = []  # accumulated per-protein data for docking_scores.csv
@@ -260,101 +305,90 @@ def process_vina_output_top_mode_only(chemical, reference_pdb, ligand_resname, d
                 protein_name = base_name.replace(f"_bound_{ligand_id}", "")
 
                 # ----------------------------------------------------------------
-                # RMSD + affinity scoring: evaluate every mode whose ligand PDBQT exists.
-                #
-                # For each mode we collect:
+                # Per-mode scoring: for every mode whose ligand PDBQT exists collect
                 #   - affinity (kcal/mol) from the REMARK VINA RESULT line
-                #   - RMSD vs the reference ligand (Hungarian algorithm)
-                #
-                # Vina always writes modes in descending score order, so mode 1
-                # is always the best docking score regardless of which mode is
-                # ultimately selected for model building.
+                #   - RMSD vs the reference ligand (Hungarian algorithm), or None if
+                #     the pose's atom composition does not match the reference.
+                # vina_split numbers modes consecutively from 1 in descending score
+                # order, so the first record is always mode 1 (the best score).
+                # summarize_modes() then derives the canonical (mode-1) metrics and
+                # the best-RMSD diagnostic.
                 # ----------------------------------------------------------------
-                best_mode = None
-                best_rmsd = float("inf")
-                rank1_rmsd = None
-                rank1_affinity = None
-                selected_affinity = None
-
-                for mode_n in range(1, 101):
+                mode_records = []
+                for mode_n in range(1, MAX_VINA_MODES + 1):
                     lig_file = f"{base_name}_ligand_{mode_n}.pdbqt"
                     if not os.path.exists(lig_file):
-                        break   # vina_split numbers modes consecutively; stop at first gap
+                        break   # stop at first gap
 
                     with open(lig_file, "r") as lf:
                         pose_lines = lf.readlines()
 
-                    # Extract affinity from REMARK VINA RESULT line
-                    affinity = None
-                    for line in pose_lines:
-                        if line.startswith("REMARK VINA RESULT:"):
-                            try:
-                                affinity = float(line.split()[3])
-                            except (IndexError, ValueError):
-                                pass
-                            break
-                    if mode_n == 1:
-                        rank1_affinity = affinity
-
+                    affinity = _parse_vina_affinity(pose_lines)
                     pose_coords, pose_elements = parse_hetatm_coords(pose_lines, ligand_resname)
 
-                    # Validate atom composition matches reference
+                    # Validate atom composition matches reference before computing RMSD
+                    pose_rmsd = None
                     if len(pose_coords) != len(ref_coords):
                         print(f"  ⚠  Mode {mode_n}: atom count mismatch "
-                              f"({len(pose_coords)} vs {len(ref_coords)}) — skipping")
-                        continue
-                    if sorted(pose_elements) != sorted(ref_elements):
-                        print(f"  ⚠  Mode {mode_n}: element mismatch — skipping")
-                        continue
+                              f"({len(pose_coords)} vs {len(ref_coords)}) — RMSD skipped")
+                    elif sorted(pose_elements) != sorted(ref_elements):
+                        print(f"  ⚠  Mode {mode_n}: element mismatch — RMSD skipped")
+                    else:
+                        pose_rmsd = rmsd_hungarian(ref_coords, pose_coords)
 
-                    pose_rmsd = rmsd_hungarian(ref_coords, pose_coords)
-                    if mode_n == 1:
-                        rank1_rmsd = pose_rmsd
-                    if pose_rmsd < best_rmsd:
-                        best_rmsd = pose_rmsd
-                        best_mode = mode_n
-                        selected_affinity = affinity
+                    mode_records.append({"mode": mode_n, "affinity": affinity, "rmsd": pose_rmsd})
 
-                if best_mode is None:
-                    print(f"  ✖ Could not compute RMSD for any pose — skipping {pdbqt_file}")
+                # Mode 1 (canonical pose) must exist; the loop starts at 1 and breaks
+                # at the first gap, so an empty list means no mode 1 was produced.
+                if not mode_records:
+                    print(f"  ✖ No mode-1 pose found — skipping {pdbqt_file}")
                     continue
 
-                # Report selection
-                if best_mode == 1:
-                    print(f"  ✓ Selected mode 1 (rank-1 = best RMSD = {best_rmsd:.3f} Å, "
-                          f"affinity = {rank1_affinity} kcal/mol)")
-                else:
-                    print(f"  ✓ Selected mode {best_mode} (RMSD {best_rmsd:.3f} Å, "
-                          f"affinity = {selected_affinity} kcal/mol) "
-                          f"over rank-1 (RMSD {rank1_rmsd:.3f} Å, "
-                          f"affinity = {rank1_affinity} kcal/mol)")
+                metrics = summarize_modes(mode_records)
+                rank1_affinity = metrics["rank1_affinity"]
+                rank1_rmsd     = metrics["rank1_rmsd"]
+                pose_divergence = metrics["pose_divergence"]
 
-                # Accumulate scores for docking_scores.csv
+                # Report: canonical pose is mode 1; best-RMSD pose is diagnostic only
+                rmsd_str = f"{rank1_rmsd:.3f} Å" if rank1_rmsd is not None else "n/a"
+                print(f"  ✓ Canonical pose = mode 1 "
+                      f"(affinity = {rank1_affinity} kcal/mol, RMSD to reference = {rmsd_str})")
+                if pose_divergence:
+                    print(f"    ⓘ Diagnostic: mode {metrics['best_rmsd_mode']} was closer to the "
+                          f"reference (RMSD {metrics['best_rmsd']:.3f} Å) — recorded, NOT used")
+
+                # Accumulate scores for docking_scores.csv. binding_affinity_kcal_mol
+                # and lig_rmsd_A are the canonical (mode-1) metrics; the best_rmsd_*
+                # columns are diagnostics only.
                 score_rows.append({
-                    "protein":                      protein_name,
-                    "best_affinity_kcal_mol":       rank1_affinity,
-                    "selected_mode":                best_mode,
-                    "selected_mode_affinity_kcal_mol": selected_affinity,
-                    "selected_mode_rmsd_A":         round(best_rmsd, 3),
+                    "protein":                          protein_name,
+                    "binding_affinity_kcal_mol":        rank1_affinity,
+                    "lig_rmsd_A":                       round(rank1_rmsd, 3) if rank1_rmsd is not None else None,
+                    "best_rmsd_mode":                   metrics["best_rmsd_mode"],
+                    "best_rmsd_A":                      round(metrics["best_rmsd"], 3) if metrics["best_rmsd"] is not None else None,
+                    "best_rmsd_mode_affinity_kcal_mol": metrics["best_rmsd_mode_affinity"],
+                    "pose_divergence":                  pose_divergence,
                 })
 
                 # ----------------------------------------------------------------
-                # Move the best-mode files to vina_output/ with clean names
+                # Keep MODE 1's files (the canonical pose) with clean names. The
+                # generated model PDB, and the PLIF/PPS metrics computed from it
+                # downstream, all derive from this same pose.
                 # ----------------------------------------------------------------
-                best_mode_files = {
-                    f"{base_name}_ligand_{best_mode}.pdbqt": f"{protein_name}_ligand.pdbqt",
-                    f"{base_name}_flex_{best_mode}.pdbqt":   f"{protein_name}_flex.pdbqt",
-                    f"{base_name}_rigid_{best_mode}.pdbqt":  f"{protein_name}_rigid.pdbqt",
+                canonical_files = {
+                    f"{base_name}_ligand_1.pdbqt": f"{protein_name}_ligand.pdbqt",
+                    f"{base_name}_flex_1.pdbqt":   f"{protein_name}_flex.pdbqt",
+                    f"{base_name}_rigid_1.pdbqt":  f"{protein_name}_rigid.pdbqt",
                 }
                 moved_count = 0
-                for src, dst_name in best_mode_files.items():
+                for src, dst_name in canonical_files.items():
                     if os.path.exists(src):
                         shutil.move(src, os.path.join(output_folder, dst_name))
                         moved_count += 1
 
-                # Delete all other modes
+                # Delete all other modes (mode-1 files are already moved out above)
                 deleted_count = 0
-                for i in range(1, 101):
+                for i in range(1, MAX_VINA_MODES + 1):
                     for suffix in ("_ligand_", "_flex_", "_rigid_"):
                         f = f"{base_name}{suffix}{i}.pdbqt"
                         if os.path.exists(f):
@@ -364,10 +398,10 @@ def process_vina_output_top_mode_only(chemical, reference_pdb, ligand_resname, d
                 # Move the original multi-mode bound file for record-keeping
                 try:
                     shutil.move(pdbqt_file, os.path.join(output_folder, pdbqt_file))
-                except Exception as e:
+                except OSError as e:
                     print(f"  ⚠  Could not move {pdbqt_file}: {e}")
 
-                print(f"  ✓ Kept {moved_count} file(s) for mode {best_mode}, "
+                print(f"  ✓ Kept {moved_count} file(s) for mode 1, "
                       f"deleted {deleted_count} other mode file(s)")
                 processed_count += 1
 
@@ -382,19 +416,25 @@ def process_vina_output_top_mode_only(chemical, reference_pdb, ligand_resname, d
         # --------------------------------------------------------------------
         # Write docking_scores.csv so downstream tools (get_summary.py,
         # susceptibility_analysis.py) always have access to:
-        #   - best_affinity_kcal_mol  : mode-1 score (best docking score)
-        #   - selected_mode           : which mode was chosen by RMSD
-        #   - selected_mode_affinity  : that mode's score (may differ from best)
-        #   - selected_mode_rmsd_A    : RMSD of the chosen pose vs reference
+        #   Canonical (mode-1) metrics — all four reported metrics describe this pose:
+        #     - binding_affinity_kcal_mol : mode-1 (best) docking score
+        #     - lig_rmsd_A                : mode-1 pose RMSD vs reference
+        #   Diagnostics (best-RMSD pose; recorded but NOT used for any metric):
+        #     - best_rmsd_mode                   : which mode was closest to reference
+        #     - best_rmsd_A                      : that pose's RMSD vs reference
+        #     - best_rmsd_mode_affinity_kcal_mol : that pose's score
+        #     - pose_divergence                  : True when best_rmsd_mode != 1
         # --------------------------------------------------------------------
         csv_dir = details_dir if details_dir and os.path.isdir(details_dir) else output_folder
         scores_csv = os.path.join(csv_dir, "docking_scores.csv")
         fieldnames = [
             "protein",
-            "best_affinity_kcal_mol",
-            "selected_mode",
-            "selected_mode_affinity_kcal_mol",
-            "selected_mode_rmsd_A",
+            "binding_affinity_kcal_mol",
+            "lig_rmsd_A",
+            "best_rmsd_mode",
+            "best_rmsd_A",
+            "best_rmsd_mode_affinity_kcal_mol",
+            "pose_divergence",
         ]
         with open(scores_csv, "w", newline="") as csvfile:
             writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
@@ -422,34 +462,8 @@ def process_vina_output_top_mode_only(chemical, reference_pdb, ligand_resname, d
 
 def parse_reference_pdb(reference_file, ligand_resname):
     """
-    Parse reference PDB file to extract ligand atom ordering and metadata.
-    
-    METHODOLOGY:
-    The reference PDB contains the experimentally-determined structure with:
-    1. Known ligand atom ordering (HETATM records)
-    2. Correct element symbols
-    3. Proper residue information
-    
-    We extract:
-    - Ligand atom names in their original order
-    - Ligand coordinates (for validation)
-    - Full HETATM record templates
-    
-    This ensures our generated models maintain consistency with the reference.
-    
-    Parameters:
-    -----------
-    reference_file : str
-        Path to the reference PDB file
-    ligand_resname : str
-        3-letter residue name of the ligand
-    
-    Returns:
-    --------
-    dict : Dictionary containing:
-        - 'atom_order': List of atom names in reference order
-        - 'atom_records': Dict mapping atom names to full HETATM lines
-        - 'atom_count': Number of ligand atoms
+    Extract ligand atom ordering from the reference PDB so generated models stay
+    consistent with it. Returns {'atom_order', 'atom_records', 'atom_count'}, or None.
     """
     print(f"  Parsing reference structure: {os.path.basename(reference_file)}")
     
@@ -479,7 +493,7 @@ def parse_reference_pdb(reference_file, ligand_resname):
             'atom_count': len(ligand_atoms)
         }
         
-    except Exception as e:
+    except (OSError, ValueError, IndexError) as e:
         print(f"  ✖ Error parsing reference PDB: {str(e)}")
         return None
 
@@ -510,37 +524,10 @@ def check_obabel_available():
 
 def combine_pdbqt_with_obabel(protein_name, vina_output_dir, ligand_resname, reference_info):
     """
-    Combine PDBQT files into a PDB model using obabel for conversion.
-    
-    METHODOLOGY:
-    This approach uses Open Babel's robust PDBQT→PDB conversion:
-    
-    1. Convert each PDBQT component to PDB format using obabel
-    2. Read the converted PDB files
-    3. Reorder ligand atoms to match reference structure
-    4. Combine components: ligand (HETATM) + protein (ATOM)
-    5. Renumber atoms sequentially
-    
-    WHY OBABEL:
-    - Correctly interprets AutoDock atom types
-    - Handles element symbols properly (avoids "A", "X" issues)
-    - Removes AutoDock-specific records automatically
-    - More robust than manual parsing
-    
-    Parameters:
-    -----------
-    protein_name : str
-        Base name of the protein structure
-    vina_output_dir : str
-        Directory containing PDBQT files
-    ligand_resname : str
-        3-letter ligand residue name
-    reference_info : dict
-        Reference structure information from parse_reference_pdb()
-    
-    Returns:
-    --------
-    str : Path to generated PDB model, or None if failed
+    Combine rigid + flex + ligand PDBQT into a PDB model using obabel (rigid/flex/ligand
+    converted separately, ligand atoms reordered to match the reference, then merged and
+    renumbered). obabel interprets AutoDock atom types and element symbols robustly,
+    which manual parsing does not. Returns the model path, or None on failure.
     """
     rigid_file = os.path.join(vina_output_dir, f"{protein_name}_rigid.pdbqt")
     flex_file = os.path.join(vina_output_dir, f"{protein_name}_flex.pdbqt")
@@ -604,8 +591,8 @@ def combine_pdbqt_with_obabel(protein_name, vina_output_dir, ligand_resname, ref
                     atom_name = line[12:16].strip()
                     # Update residue name to match user specification
                     line = line[:17] + ligand_resname.ljust(3) + line[20:]
-                    # Update residue number to 9999
-                    line = line[:22] + "9999" + line[26:]
+                    # Update residue number to a sentinel distinct from protein residues
+                    line = line[:22] + LIGAND_RESNUM + line[26:]
                     ligand_atoms[atom_name] = line.rstrip()
         
         # Reorder ligand atoms to match reference structure
@@ -711,7 +698,7 @@ def combine_pdbqt_with_obabel(protein_name, vina_output_dir, ligand_resname, ref
             shutil.rmtree(temp_dir)
         return None
         
-    except Exception as e:
+    except (OSError, ValueError, IndexError) as e:
         print(f"  ✖ Error in model generation: {str(e)}")
         if os.path.exists(temp_dir):
             shutil.rmtree(temp_dir)
@@ -724,33 +711,10 @@ def combine_pdbqt_with_obabel(protein_name, vina_output_dir, ligand_resname, ref
 
 def pdbqt_to_pdb_line(line):
     """
-    Convert a PDBQT line to PDB format (fallback method).
-    
-    METHODOLOGY:
-    PDBQT format differs from PDB in several ways:
-    1. Contains AutoDock atom types in columns 77-79
-    2. May have activity flags (A/I) in element column
-    3. Uses "ROOT", "ENDROOT", "BRANCH", "ENDBRANCH", "TORSDOF" records
-    
-    This function:
-    - Preserves ATOM/HETATM records
-    - Strips AutoDock-specific metadata
-    - Removes hydrogen atoms
-    - Removes partial charges
-    - Cleans element symbols
-    - Filters out torsion tree records
-    
-    NOTE: This approach is less robust than obabel and may have element
-    symbol issues. Use obabel when available.
-    
-    Parameters:
-    -----------
-    line : str
-        A line from a PDBQT file
-    
-    Returns:
-    --------
-    str or None : Converted PDB line, or None if line should be excluded
+    Convert one PDBQT line to PDB format (fallback when obabel is unavailable):
+    keeps ATOM/HETATM, strips AutoDock atom types / partial charges / activity flags /
+    torsion-tree records, and drops hydrogens. Returns the line, or None to exclude it.
+    Less robust than obabel and may have element-symbol issues.
     """
     # Skip hydrogen atoms
     if line.startswith("ATOM") or line.startswith("HETATM"):
@@ -783,29 +747,9 @@ def pdbqt_to_pdb_line(line):
 
 def remove_hydrogens_from_pdb(pdb_file):
     """
-    Remove all hydrogen atoms from a PDB file.
-    
-    METHODOLOGY:
-    PDBQT files from AutoDock Vina contain polar hydrogens that are necessary
-    for proper docking calculations. However, for downstream analysis 
-    we want non-protonated structures.
-    
-    This function:
-    1. Reads the PDB file line by line
-    2. Identifies hydrogen atoms by:
-       - Atom name starting with 'H' (columns 12-16)
-       - Element symbol 'H' or 'HD' (columns 76-78)
-    3. Writes all non-hydrogen atoms to the output file
-    4. Renumbers atoms sequentially after removal
-    
-    Parameters:
-    -----------
-    pdb_file : str
-        Path to the PDB file to deprotonate
-    
-    Returns:
-    --------
-    bool : True if successful, False otherwise
+    Strip hydrogens (by atom name or H/HD element) from a PDB file in place and
+    renumber atoms — docking needs polar H, downstream analysis does not. Returns
+    True on success.
     """
     try:
         # Read all lines from the PDB file
@@ -852,31 +796,14 @@ def remove_hydrogens_from_pdb(pdb_file):
         
         return True
         
-    except Exception as e:
+    except OSError as e:
         print(f"  ✖ Error removing hydrogens from {os.path.basename(pdb_file)}: {str(e)}")
         return False
 
 def combine_pdbqt_manual(protein_name, vina_output_dir, ligand_resname, reference_info):
     """
-    Combine PDBQT files using manual parsing (fallback if obabel not available).
-    
-    See combine_pdbqt_with_obabel() for methodology details.
-    This version uses manual PDBQT parsing which may have element symbol issues.
-    
-    Parameters:
-    -----------
-    protein_name : str
-        Base name of the protein structure
-    vina_output_dir : str
-        Directory containing PDBQT files
-    ligand_resname : str
-        3-letter ligand residue name
-    reference_info : dict
-        Reference structure information
-    
-    Returns:
-    --------
-    str : Path to generated PDB model, or None if failed
+    Manual-parsing fallback for combine_pdbqt_with_obabel() (used when obabel is
+    unavailable); may have element-symbol issues. Returns the model path, or None.
     """
     rigid_file = os.path.join(vina_output_dir, f"{protein_name}_rigid.pdbqt")
     flex_file = os.path.join(vina_output_dir, f"{protein_name}_flex.pdbqt")
@@ -907,7 +834,7 @@ def combine_pdbqt_manual(protein_name, vina_output_dir, ligand_resname, referenc
                         # Update residue name
                         converted = converted[:17] + ligand_resname.ljust(3) + converted[20:]
                         # Update residue number
-                        converted = converted[:22] + "9999" + converted[26:]
+                        converted = converted[:22] + LIGAND_RESNUM + converted[26:]
                         ligand_atoms[atom_name] = converted.rstrip()
         
         # Reorder ligand atoms to match reference
@@ -994,7 +921,7 @@ def combine_pdbqt_manual(protein_name, vina_output_dir, ligand_resname, referenc
         
         return output_file
         
-    except Exception as e:
+    except (OSError, ValueError, IndexError) as e:
         print(f"  ✖ Error in manual model generation: {str(e)}")
         return None
 
@@ -1005,21 +932,8 @@ def combine_pdbqt_manual(protein_name, vina_output_dir, ligand_resname, referenc
 
 def copy_missing_rigid_files(vina_output_dir, original_pdbqt_dir):
     """
-    Copy rigid PDBQT files from original directory to docking_results if missing.
-
-    This handles the case where ligand and flex files are in docking_results but
-    rigid files are still in the pdbqt_files directory.
-
-    Parameters:
-    -----------
-    vina_output_dir : str
-        Path to docking_results directory
-    original_pdbqt_dir : str
-        Path to pdbqt_files directory
-    
-    Returns:
-    --------
-    int : Number of rigid files copied
+    Copy any rigid PDBQT files still in pdbqt_files/ into docking_results/ (where the
+    ligand/flex files already are). Returns the number copied.
     """
     print(f"\n  Checking for missing rigid files...")
     
@@ -1046,7 +960,7 @@ def copy_missing_rigid_files(vina_output_dir, original_pdbqt_dir):
                 shutil.copy2(rigid_in_original, rigid_in_output)
                 print(f"    ✓ Copied: {rigid_name}")
                 copied_count += 1
-            except Exception as e:
+            except OSError as e:
                 print(f"    ✖ Error copying {rigid_name}: {str(e)}")
     
     if copied_count > 0:
@@ -1059,39 +973,10 @@ def copy_missing_rigid_files(vina_output_dir, original_pdbqt_dir):
 
 def generate_models_from_pdbqt(vina_output_dir, ligand_resname, reference_file, pdbqt_dir=None):
     """
-    Generate PDB models from PDBQT files with reference-based validation.
-
-    WORKFLOW:
-    1. Parse reference structure to get ligand atom ordering
-    2. Check if obabel is available
-    3. Copy any missing rigid files from pdbqt_files directory
-    4. For each structure:
-       - Combine rigid + flex + ligand PDBQT files
-       - Convert using obabel (preferred) or manual parsing
-       - Reorder ligand atoms to match reference
-       - Remove all hydrogen atoms (deprotonate)
-       - Save to models subdirectory
-    
-    METHODOLOGY NOTES:
-    Using the reference structure ensures:
-    - Consistent HETATM record ordering across all models
-    - Proper element symbols (when using obabel)
-    - Validation that docked poses contain expected atoms
-    
-    Parameters:
-    -----------
-    vina_output_dir : str
-        Path to directory containing PDBQT files (docking_results/)
-    ligand_resname : str
-        3-letter ligand residue name
-    reference_file : str
-        Path to reference PDB structure
-    pdbqt_dir : str, optional
-        Path to pdbqt_files/ directory; used to locate missing rigid files
-    
-    Returns:
-    --------
-    bool : True if at least one model generated successfully
+    Build a deprotonated PDB model for each docked structure: combine rigid + flex +
+    ligand PDBQT (obabel if available, else manual parsing), reorder ligand atoms to the
+    reference for consistent HETATM ordering, and save into models/. pdbqt_dir locates
+    any missing rigid files. Returns True if at least one model was generated.
     """
     print(f"\n{'='*70}")
     print("GENERATING PDB MODELS FROM PDBQT FILES")
@@ -1206,14 +1091,8 @@ def generate_models_from_pdbqt(vina_output_dir, ligand_resname, reference_file, 
 
 def run_integrated_workflow():
     """
-    Main integrated workflow combining Vina docking and model generation.
-    
-    This orchestrates:
-    1. Directory and file validation
-    2. Workflow planning (with reference structure input)
-    3. Vina batch docking
-    4. Output file processing (top modes only)
-    5. PDB model generation with reference-based ordering
+    End-to-end workflow: validate inputs, run Vina batch docking, process output
+    (rank-1 pose), and generate reference-ordered PDB models.
     """
     print("\n" + "="*70)
     print("AUTODOCK VINA INTEGRATED WORKFLOW")
@@ -1329,7 +1208,7 @@ def run_integrated_workflow():
     print("  - Handle flexible residues automatically")
     print("  - Organize final models in a 'models' directory")
 
-    generate_models = input("\nGenerate PDB models after docking? (y/n): ").lower()
+    generate_models = prompt_yes_no("\nGenerate PDB models after docking? (y/n): ")
     
     # ========================================================================
     # STEP 4: Run Vina docking
@@ -1369,7 +1248,7 @@ def run_integrated_workflow():
     # STEP 6: Generate models if requested
     # ========================================================================
     
-    if generate_models == 'y':
+    if generate_models:
         model_success = generate_models_from_pdbqt(
             os.path.abspath(output_dir),
             ligand_resname,
@@ -1417,7 +1296,7 @@ def run_integrated_workflow():
 
                     # Modify residue name and number to match generated models
                     line = line[:17] + ligand_resname.ljust(3) + line[20:]
-                    line = line[:22] + "9999" + line[26:]
+                    line = line[:22] + LIGAND_RESNUM + line[26:]
 
                     hetatm_lines.append(line)
 

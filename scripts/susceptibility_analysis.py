@@ -313,6 +313,8 @@ def get_threshold_configuration():
         use_permissive: Boolean for permissive thresholding
         permissive_factor: Standard deviation multiplier (if permissive thresholding)
     """
+    from utils import prompt_yes_no
+
     print("\n" + "="*70)
     print("CONFIDENCE THRESHOLD CONFIGURATION")
     print("="*70)
@@ -322,7 +324,7 @@ def get_threshold_configuration():
     for metric, thresh in DEFAULT_THRESHOLDS.items():
         print(f"  {metric}: {thresh}")
 
-    use_defaults = input("\nUse defaults? (y/n): ").strip().lower() in ['y', 'yes']
+    use_defaults = prompt_yes_no("\nUse defaults? (y/n): ")
 
     if use_defaults:
         thresholds = DEFAULT_THRESHOLDS.copy()
@@ -341,7 +343,7 @@ def get_threshold_configuration():
     print("bad tail (mean ± factor × SD).  The effective threshold is the more lenient")
     print("of the hard cutoff and this data-driven value.")
 
-    use_permissive = input("\nUse permissive thresholding? (y/n): ").strip().lower() in ['y', 'yes']
+    use_permissive = prompt_yes_no("\nUse permissive thresholding? (y/n): ")
 
     if use_permissive:
         permissive_factor_input = input("  Tolerance (SD multiplier) [1.5]: ").strip()
@@ -516,27 +518,70 @@ def evaluate_ensemble_confidence(df, thresholds, use_permissive, permissive_fact
     return df
 
 
-def calculate_species_summary(df, cleaned_indices):
+def _reference_precision_matrix(ref_data, n_dims):
     """
-    Calculate species-level confidence summary.
+    Estimate the inverse-covariance (precision) matrix of the reference species
+    in standardized metric space, used as the metric for Mahalanobis distance.
+
+    LedoitWolf shrinkage is used for a well-conditioned estimate even with few
+    reference ensembles.  Falls back to the identity matrix (reducing the
+    Mahalanobis distance to plain Euclidean distance) when there are too few
+    samples or the estimate is singular.
+
+    Returns:
+        (precision_matrix, metric_name)
+    """
+    if len(ref_data) >= 2:
+        try:
+            precision = LedoitWolf().fit(ref_data).precision_
+            # Reject a degenerate (non-finite) estimate
+            if np.all(np.isfinite(precision)):
+                return precision, "LedoitWolf"
+        except (np.linalg.LinAlgError, ValueError):
+            pass
+    print("  ⚠ Reference covariance unavailable; ranking by Euclidean distance")
+    return np.eye(n_dims), "identity (Euclidean)"
+
+
+def calculate_species_summary(df, cleaned_indices, metric_cols, ref_species):
+    """
+    Calculate species-level confidence summary and Mahalanobis-distance ranking.
 
     Species confidence uses majority vote: a level is assigned only when
     more than 50 % of that species' ensembles reach it (or better).  This
     prevents a single high-performing ensemble from inflating the species
     label when the remaining ensembles are weaker.
 
+    Independently of the confidence label, every species is also RANKED by the
+    Mahalanobis distance of its centroid from the reference species centroid in
+    the (reference-standardized) multivariate metric space, using the reference
+    species' covariance as the metric.  Smaller distance = more similar to the
+    reference = better rank (rank 1).  The reference species itself has distance
+    0 and ranks first.  Confidence level and rank are complementary: the label
+    answers "does it pass enough thresholds?" while the rank answers "how close
+    to the reference overall?".
+
     Args:
-        df: DataFrame with ensemble confidence scores
+        df: DataFrame with ensemble confidence scores (metric_cols standardized)
         cleaned_indices: Indices after outlier removal
+        metric_cols: List of standardized metric column names
+        ref_species: Name of the reference species
 
     Returns:
-        species_summary: DataFrame with per-species statistics
+        species_summary: DataFrame with per-species statistics, sorted by rank
     """
     print("\n" + "="*70)
     print("SPECIES-LEVEL SUMMARY")
     print("="*70)
 
     df_clean = df.loc[cleaned_indices].copy()
+
+    # Reference centroid and precision matrix define the Mahalanobis metric
+    ref_clean    = df_clean[df_clean['species'] == ref_species][metric_cols]
+    ref_centroid = ref_clean.mean(axis=0).values
+    precision, metric_name = _reference_precision_matrix(ref_clean, len(metric_cols))
+    print(f"\nMahalanobis ranking metric: {metric_name} "
+          f"(reference = {ref_species}, n={len(ref_clean)})")
 
     species_summary = []
 
@@ -562,25 +607,39 @@ def calculate_species_summary(df, cleaned_indices):
         else:
             species_confidence = 'Weak'
 
+        # Mahalanobis distance of this species' centroid from the reference centroid
+        species_centroid = species_data[metric_cols].mean(axis=0).values
+        maha_dist = float(mahalanobis(species_centroid, ref_centroid, precision))
+
         species_summary.append({
             'species':             species,
             'n_ensembles':         n_total,
             'best_ensemble':       int(best_ensemble['ensemble']),
             'best_n_metrics_pass': int(best_ensemble['n_metrics_pass']),
             'species_confidence':  species_confidence,
+            'mahalanobis_to_reference': round(maha_dist, 4),
             'strong_count':        n_strong,
             'moderate_count':      n_moderate,
             'weak_count':          n_weak
         })
 
-        print(f"\n{species}: {species_confidence.upper()}")
-        print(f"  Best: Ensemble {best_ensemble['ensemble']} "
-              f"({best_ensemble['n_metrics_pass']}/4 metrics)")
-        print(f"  Distribution: Strong={n_strong}, "
-              f"Moderate={n_moderate}, "
-              f"Weak={n_weak}")
+    # Rank by Mahalanobis distance (ascending: closest to reference = rank 1)
+    summary_df = pd.DataFrame(species_summary).sort_values(
+        'mahalanobis_to_reference'
+    ).reset_index(drop=True)
+    summary_df.insert(0, 'rank', range(1, len(summary_df) + 1))
 
-    return pd.DataFrame(species_summary)
+    # Print in rank order
+    for _, row in summary_df.iterrows():
+        print(f"\n#{row['rank']}  {row['species']}: {row['species_confidence'].upper()}  "
+              f"(Mahalanobis distance to reference = {row['mahalanobis_to_reference']:.3f})")
+        print(f"  Best: Ensemble {row['best_ensemble']} "
+              f"({row['best_n_metrics_pass']}/4 metrics)")
+        print(f"  Distribution: Strong={row['strong_count']}, "
+              f"Moderate={row['moderate_count']}, "
+              f"Weak={row['weak_count']}")
+
+    return summary_df
 
 
 # ============================================================================
@@ -632,7 +691,7 @@ def generate_pca_visualization(df, metric_cols, ref_species, species_summary,
     ref_data    = df_clean[df_clean['species'] == ref_species]
     non_ref     = df_clean[df_clean['species'] != ref_species]
 
-    # Confidence colour mapping
+    # Confidence color mapping
     confidence_colors = {
         'Strong':   '#006400',  # Dark green
         'Moderate': '#FFA500',  # Orange
@@ -669,7 +728,7 @@ def generate_pca_visualization(df, metric_cols, ref_species, species_summary,
                     color=conf_color, alpha=0.15, linewidth=0.8,
                     linestyle='-', zorder=1.5)
 
-    # Non-reference models coloured by ensemble confidence
+    # Non-reference models colored by ensemble confidence
     for conf_level in ['Weak', 'Moderate', 'Strong']:
         conf_data = non_ref[non_ref['confidence_level'] == conf_level]
         if len(conf_data) > 0:
@@ -866,17 +925,15 @@ def save_results(df, species_summary, outlier_info, thresholds,
         f.write("Moderate: 2 metrics pass     |  species requires >50% ensembles Strong+Moderate\n")
         f.write("Weak:     0-1 metrics pass   |  default\n\n")
 
-        f.write("SPECIES RESULTS\n")
+        f.write("SPECIES RESULTS (ranked by Mahalanobis distance to reference)\n")
         f.write("="*70 + "\n\n")
 
-        # Sort by confidence
-        species_sorted = species_summary.sort_values(
-            by='species_confidence',
-            key=lambda x: x.map({'Strong': 0, 'Moderate': 1, 'Weak': 2})
-        )
+        # species_summary is already ordered by rank (ascending Mahalanobis distance)
+        species_sorted = species_summary.sort_values(by='rank')
 
         for _, row in species_sorted.iterrows():
-            f.write(f"{row['species']}: {row['species_confidence'].upper()}\n")
+            f.write(f"#{row['rank']}  {row['species']}: {row['species_confidence'].upper()}\n")
+            f.write(f"  Mahalanobis distance to reference: {row['mahalanobis_to_reference']:.3f}\n")
             f.write(f"  Ensembles: {row['n_ensembles']}\n")
             f.write(f"  Best: Ensemble {row['best_ensemble']} "
                     f"({row['best_n_metrics_pass']}/4 metrics)\n")
@@ -952,7 +1009,7 @@ def main():
         df, thresholds, use_permissive, permissive_factor, ref_data_orig, cleaned_indices
     )
 
-    species_summary = calculate_species_summary(df, cleaned_indices)
+    species_summary = calculate_species_summary(df, cleaned_indices, metric_cols, ref_species)
 
     # STEP 6: Generate PCA visualization
     df = generate_pca_visualization(

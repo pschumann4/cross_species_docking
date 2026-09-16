@@ -5,37 +5,132 @@ Prepares the test and reference structure for molecular dynamics simulation and 
 It performs the following steps:
 1. Runs PDBFixer to clean up the structure, add missing atoms, and ensure it's suitable for MD.
 2. Identifies binding pocket residues based on proximity to the ligand (in reference structure).
-3. Runs a short MD simulation to equilibrate the structure and generate a trajectory.
-4. Analyzes the trajectory to calculate RMSF (Root Mean Square Fluctuation) for each residue, 
+3. Runs a fixed-length (MDS_TIME_PS) MD simulation, seeded for reproducibility, to relax the
+   predicted model and sample within-basin conformational fluctuations.
+4. Analyzes the trajectory to calculate RMSF (Root Mean Square Fluctuation) for each residue,
    identifying which residues are flexible based on a defined threshold.
-5. Optionally extracts multiple structures from the equilibrated plateau region to create an ensemble.
+5. Extracts an ensemble of N_ENSEMBLE cluster medoids (by pocket RMSD) from the post-burn-in
+   frames, capturing diverse relaxed conformations to dock against.
+
+This MD step is for RELAXATION + FLEXIBILITY PROFILING + within-basin ensemble sampling. It does
+NOT detect thermodynamic equilibrium and does NOT reach distinct conformational macrostates on this
+timescale.
 
 Outputs
 -------
 - Fixed PDB files for test and reference structures (protein only for MD, with ligand for reference)
+- A relaxation QC plot (superposed Cα RMSD vs first frame) per structure
 - RMSF plots showing residue flexibility with flexible residues highlighted
 - A summary file listing flexible residues for each structure
-- Extracted ensemble structures from the plateau region (if enabled)
+- N_ENSEMBLE medoid ensemble structures per receptor (with intra-ensemble diversity QC)
 """
 
 import os
 import sys
 import shutil
 import time
+import warnings
 import numpy as np
+
+# MDAnalysis.analysis.align pulls in the deprecated Bio.Application module, which
+# emits a BiopythonDeprecationWarning at import time. It is a benign third-party
+# warning (we do not use Bio.Application); silence it before importing MDAnalysis
+# so it does not clutter the pipeline output.
+warnings.filterwarnings("ignore", message=".*Bio.Application modules.*")
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from utils import euclidean3d, centroid, load_config, save_config, CONFIG_FILENAME
+from utils import euclidean3d, centroid, load_config, save_config, CONFIG_FILENAME, prompt_yes_no
 import matplotlib.pyplot as plt
 import MDAnalysis as mda
 from MDAnalysis.analysis.rms import RMSD
 from MDAnalysis.analysis.rms import RMSF
-import ruptures as rpt
+from MDAnalysis.analysis import align
+from scipy.cluster.hierarchy import linkage, fcluster
+from scipy.spatial.distance import squareform
 from openmm.app import *
 from openmm import *
 from openmm.unit import *
 from sys import stdout
 from pdbfixer import PDBFixer
 from openmm.app import PDBFile
+
+# ---------------------------------------------------------------------------
+# MD protocol constants (fixed for reproducibility; no longer user-tunable)
+# ---------------------------------------------------------------------------
+MDS_TIME_PS = 200          # fixed simulation length (relaxation + sampling)
+INTEGRATOR_SEED = 42       # Langevin seed → reproducible trajectories per machine
+BURN_IN_FRACTION = 0.25    # leading fraction of frames discarded as relaxation transient
+N_ENSEMBLE = 5             # number of medoid structures extracted per receptor
+LOW_DIVERSITY_RMSD = 0.5   # Å; below this mean pairwise medoid RMSD the pocket is
+                           # effectively rigid (flagged as a QC warning)
+
+
+# ---------------------------------------------------------------------------
+# Ensemble-selection helpers (pure; unit-tested in tests/test_utils.py)
+# ---------------------------------------------------------------------------
+
+def apply_burn_in(n_frames, fraction=BURN_IN_FRACTION):
+    """
+    Return the index of the first frame to keep after discarding a leading
+    burn-in fraction (the relaxation transient where the structure is still
+    shedding the predicted-model geometry).
+
+    Guarantees at least two frames remain so a pairwise distance matrix can be
+    built; for very short trajectories the burn-in is reduced accordingly.
+    """
+    if n_frames < 2:
+        return 0
+    start = int(n_frames * fraction)
+    return min(start, n_frames - 2)
+
+
+def select_medoids(dist_matrix, k):
+    """
+    Cluster frames by a precomputed pairwise distance matrix and return one
+    medoid index per cluster.
+
+    Hierarchical (average-linkage) clustering partitions the frames into at most
+    k clusters; each cluster's medoid is the member minimizing the summed
+    distance to the other members — i.e. a real, representative frame. Returns
+    sorted local indices into dist_matrix.
+
+    When there are k or fewer frames, every frame is returned (nothing to merge).
+    """
+    n = len(dist_matrix)
+    if n == 0:
+        return []
+    if n <= k:
+        return list(range(n))
+
+    condensed = squareform(np.asarray(dist_matrix), checks=False)
+    linkage_matrix = linkage(condensed, method="average")
+    labels = fcluster(linkage_matrix, t=k, criterion="maxclust")
+
+    medoids = []
+    for label in np.unique(labels):
+        members = np.where(labels == label)[0]
+        # medoid = member with the smallest total distance to the rest of its cluster
+        submatrix = np.asarray(dist_matrix)[np.ix_(members, members)]
+        medoid_local = members[np.argmin(submatrix.sum(axis=1))]
+        medoids.append(int(medoid_local))
+    return sorted(medoids)
+
+
+def intra_ensemble_diversity(dist_matrix, medoid_indices):
+    """
+    Mean pairwise distance among the selected medoids — a QC measure of how much
+    conformational diversity the ensemble actually captures. Returns 0.0 when
+    fewer than two medoids are present.
+    """
+    if len(medoid_indices) < 2:
+        return 0.0
+    dm = np.asarray(dist_matrix)
+    pairs = [
+        dm[medoid_indices[i], medoid_indices[j]]
+        for i in range(len(medoid_indices))
+        for j in range(i + 1, len(medoid_indices))
+    ]
+    return float(np.mean(pairs))
 
 
 def run_pdbfixer(pdb_name, output_dir, keep_ligand=False, ligand_name=None):
@@ -120,6 +215,38 @@ def run_pdbfixer(pdb_name, output_dir, keep_ligand=False, ligand_name=None):
             print(f"  Warning: Ligand {ligand_name} not found in original file")
 
     return fixed_filename, original_resids
+
+
+# Solvent residue names that are never the ligand of interest; excluded from the
+# candidate ligand list unless they are the only HETATM records present.
+WATER_RESNAMES = {"HOH", "WAT", "H2O", "DOD", "TIP", "TIP3", "SPC"}
+
+
+def list_hetatm_ligands(pdb_file):
+    """
+    Return candidate ligand residue names found in a PDB's HETATM records.
+
+    Returns a list of (resname, atom_count) sorted by total atom count
+    descending — the true ligand is usually the largest HETATM group, while
+    ions and waters are 1-3 atoms. Water-like residues are dropped unless they
+    are the only HETATM records present.
+    """
+    counts = {}
+    try:
+        with open(pdb_file) as f:
+            for line in f:
+                if line.startswith("HETATM"):
+                    resname = line[17:20].strip()
+                    if resname:
+                        counts[resname] = counts.get(resname, 0) + 1
+    except OSError as e:
+        print(f"  Warning: could not read {pdb_file}: {e}")
+        return []
+
+    filtered = {k: v for k, v in counts.items() if k.upper() not in WATER_RESNAMES}
+    if not filtered:                      # only water present — show it anyway
+        filtered = counts
+    return sorted(filtered.items(), key=lambda kv: kv[1], reverse=True)
 
 
 def get_binding_pocket_residues(pdb_file, ligand_name):
@@ -216,7 +343,7 @@ def save_flexible_residues_summary(output_dir, results):
     for result in results:
         if result.get('rmsf_data') and not result.get('is_reference', False):
             rmsf_data = result['rmsf_data']
-            structure_name = os.path.basename(result['equilibration_structure']).replace('.pdb', '')
+            structure_name = result['structure_name']
             flexible_residues = rmsf_data['flexible_residues']
             
             flex_structures.append({
@@ -386,226 +513,172 @@ def plot_rmsf(rmsf_data, output_path, structure_name, pocket_only=False):
     plt.close()
 
 
-def calculate_frame_to_frame_rmsd(trajectory_path, dt=5.0):
+def calculate_relaxation_rmsd(trajectory_path, dt=5.0):
     """
-    Calculate frame-to-frame RMSD to detect when structure stops changing
-    
-    Parameters:
-    -----------
+    Calculate Cα RMSD of each frame versus the first frame, WITH rigid-body
+    superposition, as a QC curve for how far the structure relaxes from the
+    starting (predicted) model and whether it settles.
+
+    Superposition (least-squares fit on Cα) is essential: the simulation runs in
+    implicit solvent with no periodic box, so the protein is free to rotate and
+    translate. Without alignment that global tumbling leaks into the RMSD and
+    masquerades as conformational change. This curve is used for QC/plotting
+    only — it no longer gates ensemble selection.
+
+    Parameters
+    ----------
     trajectory_path : str
-        Path to the trajectory PDB file
+        Path to the trajectory PDB file.
     dt : float
-        Time between frames in ps (default: 5.0)
-    
-    Returns:
-    --------
-    dict: Contains 'time' array and 'rmsd' array (frame-to-frame RMSD values)
+        Time between frames in ps.
+
+    Returns
+    -------
+    dict: 'time' array and 'rmsd' array (Å, superposed vs frame 0).
     """
     u = None
     try:
         u = mda.Universe(trajectory_path, dt=dt)
         n_frames = len(u.trajectory)
-        
+
         if n_frames < 2:
-            raise ValueError(f"Trajectory has only {n_frames} frame(s), need at least 2 for frame-to-frame RMSD")
-        
-        protein = u.select_atoms("protein and name CA")  # Use C-alpha atoms for efficiency
-        
-        # Initialize arrays
-        frame_to_frame_rmsd = []
-        time_points = []
-        
-        # Set reference to first frame
+            raise ValueError(f"Trajectory has only {n_frames} frame(s), need at least 2 for relaxation RMSD")
+
+        # RMSD vs first frame with superposition on Cα (select + groupselections empty)
         u.trajectory[0]
-        ref_positions = protein.positions.copy()
-        
-        # Calculate RMSD between consecutive frames
-        for ts in u.trajectory[1:]:
-            current_positions = protein.positions.copy()
-            
-            # Calculate RMSD between current and previous frame
-            diff = current_positions - ref_positions
-            rmsd = np.sqrt(np.mean(np.sum(diff**2, axis=1)))
-            
-            frame_to_frame_rmsd.append(rmsd)
-            time_points.append(ts.time)
-            
-            # Update reference to current frame
-            ref_positions = current_positions
-        
+        rmsd_analysis = RMSD(u, u, select="protein and name CA", ref_frame=0).run()
+        results = rmsd_analysis.results.rmsd  # columns: frame, time (ps), RMSD (Å)
+
         return {
-            'time': np.array(time_points),
-            'rmsd': np.array(frame_to_frame_rmsd)
+            'time': results[:, 1],
+            'rmsd': results[:, 2],
         }
-    
+
     finally:
         if u is not None:
             u.trajectory.close()
             del u
 
 
-def estimate_plateau_point(rmsd_values, time, min_plateau_duration_ps=20.0, pen_factor=2.0):
+def pocket_rmsd_matrix(trajectory_path, pocket_resids, original_resids, start_index):
     """
-    Estimate the equilibration point using changepoint detection
-    
-    Uses PELT algorithm to detect when RMSD stabilizes. Includes validation
-    to ensure the plateau is sustained for a minimum duration.
-    
-    Parameters:
-    -----------
-    rmsd_values : np.array
-        Array of RMSD values
-    time : np.array
-        Array of time points corresponding to RMSD values
-    min_plateau_duration_ps : float
-        Minimum duration (in ps) that a plateau must be sustained to be valid
-    pen_factor : float
-        Penalty factor for PELT algorithm (higher = fewer changepoints)
-    
-    Returns:
-    --------
-    dict: Plateau statistics including start time, mean, std, and representative frame
+    Build a pairwise Cα RMSD matrix over binding-pocket residues for the frames
+    from start_index onward, after rigid-body superposition of the whole protein.
+
+    Aligning on the whole-protein Cα first, then measuring RMSD on only the pocket
+    Cα atoms, captures pocket motion *relative to the body* rather than global
+    drift. This matrix is the input to medoid-based ensemble selection.
+
+    Residue identity is resolved the same way as calculate_rmsf: when
+    original_resids is supplied it overrides the trajectory's internal (1..N)
+    numbering so pocket_resids (in the reference numbering) select the right
+    residues. If pocket_resids is falsy, all Cα atoms are used.
+
+    Returns
+    -------
+    (frame_indices, matrix) : (list[int], np.ndarray)
+        Global frame indices included and the symmetric NxN RMSD matrix (Å).
     """
-    if len(rmsd_values) < 3:
-        raise ValueError(f"Need at least 3 data points for plateau detection, got {len(rmsd_values)}")
-    
-    # Adaptive penalty based on data characteristics
-    data_range = np.ptp(rmsd_values)  # Peak-to-peak range
-    penalty = pen_factor * data_range
-    
-    # Plateau detection using PELT algorithm
+    # Build the Universe without a `dt` kwarg: MDAnalysis forwards `dt` to the
+    # in-memory MemoryReader (which already sets it), raising "got multiple values
+    # for keyword argument 'dt'". Time is irrelevant here — only frame coordinates
+    # matter — so AlignTraj(in_memory=True) does the in-memory transfer instead.
+    u = mda.Universe(trajectory_path)
     try:
-        algo = rpt.Pelt(model="rbf").fit(rmsd_values)
-        changepoints = algo.predict(pen=penalty)
-    except Exception as e:
-        print(f"Warning: PELT algorithm failed with pen={penalty:.3f}, using fallback method")
-        # Fallback: use the point where RMSD drops below mean + 0.5*std
-        mean_rmsd = np.mean(rmsd_values)
-        std_rmsd = np.std(rmsd_values)
-        threshold = mean_rmsd + 0.5 * std_rmsd
-        
-        below_threshold = rmsd_values < threshold
-        if np.any(below_threshold):
-            plateau_start_index = np.argmax(below_threshold)
+        # Superpose every frame onto frame 0 on protein Cα (removes tumbling/drift)
+        align.AlignTraj(u, u, select="protein and name CA", ref_frame=0, in_memory=True).run()
+
+        ca = u.select_atoms("protein and name CA")
+        if original_resids is not None and len(original_resids) == len(ca.residues):
+            resids = np.asarray(original_resids)
         else:
-            # Last resort: use midpoint
-            plateau_start_index = len(rmsd_values) // 2
-        changepoints = [plateau_start_index]
-    
-    # Use first changepoint as potential plateau start
-    plateau_start_index = changepoints[0] if changepoints else len(rmsd_values) // 2
-    
-    # Ensure we don't start beyond the data
-    if plateau_start_index >= len(rmsd_values):
-        plateau_start_index = len(rmsd_values) // 2
-        print(f"Warning: Changepoint beyond data range, using midpoint at index {plateau_start_index}")
-    
-    # Validate minimum plateau duration
-    plateau_duration = time[-1] - time[plateau_start_index]
-    
-    if plateau_duration < min_plateau_duration_ps:
-        print(f"Warning: Detected plateau duration ({plateau_duration:.1f} ps) is less than "
-              f"minimum required ({min_plateau_duration_ps:.1f} ps)")
-        # Try to find an earlier stable region
-        target_index = len(rmsd_values) - int(min_plateau_duration_ps / (time[1] - time[0]))
-        if target_index < 0:
-            print("Warning: Insufficient simulation time for minimum plateau duration")
-            target_index = 0
-        plateau_start_index = max(0, target_index)
-    
-    # Calculate plateau statistics
-    plateau_values = rmsd_values[plateau_start_index:]
-    if len(plateau_values) == 0:
-        raise ValueError("No data points in plateau region")
-    
-    plateau_average = np.mean(plateau_values)
-    plateau_std = np.std(plateau_values)
-    
-    # Find the frame closest to the plateau mean
-    differences = np.abs(plateau_values - plateau_average)
-    closest_to_mean_local_idx = np.argmin(differences)
-    closest_to_mean_index = plateau_start_index + closest_to_mean_local_idx
+            resids = ca.residues.resids
 
-    return {
-        'start_index': plateau_start_index,
-        'start_time': time[plateau_start_index],
-        'plateau_average': plateau_average,
-        'plateau_std': plateau_std,
-        'mean_representative_index': closest_to_mean_index,
-        'mean_representative_time': time[closest_to_mean_index]
-    }
+        if pocket_resids:
+            mask = np.isin(resids, [int(r) for r in pocket_resids])
+            if not mask.any():
+                mask = np.ones(len(ca), dtype=bool)  # fall back to all Cα
+        else:
+            mask = np.ones(len(ca), dtype=bool)
+
+        n_frames = len(u.trajectory)
+        frame_indices = list(range(start_index, n_frames))
+
+        # Collect aligned pocket-Cα coordinates for each retained frame
+        coords = []
+        for idx in frame_indices:
+            u.trajectory[idx]
+            coords.append(ca.positions[mask].copy())
+        coords = np.asarray(coords)
+
+        n = len(coords)
+        matrix = np.zeros((n, n))
+        for i in range(n):
+            for j in range(i + 1, n):
+                diff = coords[i] - coords[j]
+                rmsd = np.sqrt(np.mean(np.sum(diff ** 2, axis=1)))
+                matrix[i, j] = matrix[j, i] = rmsd
+
+        return frame_indices, matrix
+    finally:
+        u.trajectory.close()
+        del u
 
 
-def extract_ensemble_structures(trajectory_path, output_dir, pdb_name, plateau_start_index, 
-                                 plateau_end_index=None, n_structures=5, original_resids=None,
-                                 preserve_ligand=False, ligand_name=None, original_pdb=None):
+def extract_ensemble_structures(trajectory_path, output_dir, pdb_name, frame_indices,
+                                 original_resids=None,
+                                 preserve_ligand=False, ligand_name=None, original_pdb=None,
+                                 align_reference=None):
     """
-    Extract multiple structures from the equilibrated plateau region
-    
-    This provides an ensemble of structures capturing conformational diversity,
-    which can compensate for any inaccuracies in the structural prediction and 
-    provide better sampling for docking.
-    
-    Parameters:
-    -----------
-    trajectory_path : str
-        Path to trajectory file
-    output_dir : str
-        Output directory
-    pdb_name : str
-        Base name for output files
-    plateau_start_index : int
-        First frame of plateau
-    plateau_end_index : int, optional
-        Last frame of plateau (default: end of trajectory)
-    n_structures : int
-        Number of structures to extract from plateau
-    original_resids : np.array, optional
-        Original residue IDs to preserve numbering
-    preserve_ligand : bool
-        Whether to append ligand from original structure
-    ligand_name : str, optional
-        Name of ligand to preserve
-    original_pdb : str, optional
-        Path to original PDB file containing ligand
-    
-    Returns:
-    --------
-    list: Paths to extracted PDB files
+    Write the given (medoid) trajectory frames as an ensemble of PDB structures.
+
+    Before writing, every frame is rigid-body superposed (protein Cα) onto
+    align_reference — the pre-MD input structure, which sits in the reference /
+    docking-gridbox frame established by multiple_prot_align and shares the
+    trajectory's topology (so the fit is exact). This puts the written structures in
+    that frame rather than letting them carry the MD's rigid-body tumbling (in
+    implicit solvent with no periodic box, OpenMM removes COM translation but not
+    rotation). Otherwise each pocket drifts off the single reference-derived gridbox
+    and the absolute-coordinate metrics (lig_RMSD / PLIF / PPS) are inflated. The
+    internal conformational differences between medoids are preserved. Falls back to
+    frame 0 if align_reference is missing or its atoms don't match.
     """
     u = None
     ensemble_files = []
-    
+
     # Read ligand lines from original PDB if needed
     ligand_lines = []
     if preserve_ligand and ligand_name and original_pdb:
         with open(original_pdb, 'r') as f:
             original_lines = f.readlines()
-        ligand_lines = [line for line in original_lines 
+        ligand_lines = [line for line in original_lines
                        if line.startswith('HETATM') and line[17:20].strip() == ligand_name]
-    
+
     try:
         u = mda.Universe(trajectory_path)
-        
-        if plateau_end_index is None:
-            plateau_end_index = len(u.trajectory) - 1
-        
-        # Validate indices
-        plateau_end_index = min(plateau_end_index, len(u.trajectory) - 1)
-        
-        if plateau_start_index >= len(u.trajectory):
-            raise ValueError(f"Plateau start index {plateau_start_index} exceeds trajectory length {len(u.trajectory)}")
-        
-        # Select frames uniformly from plateau
-        plateau_length = plateau_end_index - plateau_start_index + 1
-        
-        if plateau_length < n_structures:
-            print(f"Warning: Plateau has only {plateau_length} frames, extracting all")
-            frame_indices = list(range(plateau_start_index, plateau_end_index + 1))
-        else:
-            frame_indices = np.linspace(plateau_start_index, plateau_end_index, 
-                                       n_structures, dtype=int)
-        
+        n_traj = len(u.trajectory)
+        frame_indices = [idx for idx in frame_indices if 0 <= idx < n_traj]
+        if not frame_indices:
+            raise ValueError("No valid frame indices supplied for ensemble extraction")
+
+        # Remove MD rigid-body drift: superpose every frame (protein Cα) onto the
+        # reference frame. align_reference (the pre-MD input structure) is in the
+        # multiple_prot_align / gridbox frame and shares the trajectory's topology, so
+        # the fit is exact; frame 0 is the fallback when no reference is available.
+        ref_universe = None
+        if align_reference and os.path.exists(align_reference):
+            try:
+                ref_universe = mda.Universe(align_reference)
+                align.AlignTraj(u, ref_universe, select="protein and name CA",
+                                in_memory=True).run()
+            except Exception as e:
+                print(f"  Warning: could not align ensemble to reference structure "
+                      f"({e}); falling back to frame 0")
+                ref_universe = None
+        if ref_universe is None:
+            align.AlignTraj(u, u, select="protein and name CA", ref_frame=0,
+                            in_memory=True).run()
+
         protein = u.select_atoms("protein")
         base_name = os.path.basename(pdb_name).replace(".pdb", "")
         
@@ -652,12 +725,15 @@ def extract_ensemble_structures(trajectory_path, output_dir, pdb_name, plateau_s
             del u
 
 
-def run_mds(processed_filename, output_dir, mds_time=None, extract_ensemble=False, 
-            n_ensemble=1, min_plateau_duration=20.0, original_resids=None,
+def run_mds(processed_filename, output_dir, mds_time=MDS_TIME_PS, original_resids=None,
             analyze_flexibility=False, binding_pocket_resids=None, structure_name=None,
             preserve_ligand=False, ligand_name=None, original_pdb=None):
     """
     Run Molecular Dynamics Simulation on a PDB file
+
+    Runs a fixed-length relaxation simulation, then extracts an ensemble of
+    N_ENSEMBLE cluster medoids from the post-burn-in frames (sampling within-basin
+    conformational diversity) and profiles residue flexibility via RMSF.
 
     Parameters:
     -----------
@@ -666,19 +742,14 @@ def run_mds(processed_filename, output_dir, mds_time=None, extract_ensemble=Fals
     output_dir : str
         Directory to save output files
     mds_time : int, optional
-        Total simulation time in ps
-    extract_ensemble : bool
-        Whether to extract multiple structures from plateau (default: False)
-    n_ensemble : int
-        Number of structures to extract if extract_ensemble=True (default: 1)
-    min_plateau_duration : float
-        Minimum plateau duration in ps for validation (default: 20.0)
+        Total simulation time in ps (defaults to the fixed MDS_TIME_PS)
     original_resids : np.array, optional
         Original residue IDs to preserve numbering
     analyze_flexibility : bool
         Whether to perform RMSF analysis for binding pocket flexibility
     binding_pocket_resids : list, optional
-        List of binding pocket residue IDs for RMSF analysis
+        List of binding pocket residue IDs for RMSF analysis and pocket-RMSD
+        clustering
     structure_name : str, optional
         Name for output files (used in RMSF plots)
     preserve_ligand : bool
@@ -690,12 +761,12 @@ def run_mds(processed_filename, output_dir, mds_time=None, extract_ensemble=Fals
 
     Returns:
     --------
-    dict: Contains paths to output files and equilibration statistics
+    dict: Contains paths to output files and ensemble/relaxation statistics
         - 'mds_trajectory': Path to MDS trajectory file
-        - 'equilibration_time': Time of equilibration in ps
-        - 'equilibration_structure': Path to single equilibrated structure
-        - 'ensemble_structures': List of ensemble structure paths (if extract_ensemble=True)
-        - 'plateau_stats': Dictionary of plateau statistics
+        - 'burn_in_index' / 'burn_in_time': discarded relaxation transient
+        - 'ensemble_structures': List of medoid ensemble structure paths
+        - 'ensemble_frames': trajectory frame indices of the medoids
+        - 'ensemble_diversity': mean pairwise pocket RMSD among medoids (Å)
         - 'rmsf_data': RMSF analysis results (if analyze_flexibility=True)
     """
     try:
@@ -720,6 +791,8 @@ def run_mds(processed_filename, output_dir, mds_time=None, extract_ensemble=Fals
                                     constraints=HBonds,
                                     hydrogenMass=1.5*amu)
         integrator = LangevinMiddleIntegrator(300*kelvin, 1/picosecond, 0.004*picoseconds)
+        # Fixed seed → reproducible trajectories (subject to platform/thread determinism)
+        integrator.setRandomNumberSeed(INTEGRATOR_SEED)
         simulation = Simulation(modeller.topology, system, integrator)
         simulation.context.setPositions(modeller.positions)
 
@@ -747,149 +820,84 @@ def run_mds(processed_filename, output_dir, mds_time=None, extract_ensemble=Fals
         del simulation
         del pdb
 
-        # RMSD Analysis using frame-to-frame approach
-        print("\nCalculating frame-to-frame RMSD to detect equilibration...\n")
-        
+        # ------------------------------------------------------------------
+        # Relaxation QC + ensemble selection (no equilibration gating)
+        # ------------------------------------------------------------------
+        print("\nAnalyzing relaxation (superposed Cα RMSD vs first frame)...\n")
+
         # Validate that trajectory was created and has frames
         if not os.path.exists(mds_output_name):
             raise RuntimeError(f"MD trajectory file not created: {mds_output_name}")
-        
-        # Quick check of frame count
+
         u_check = mda.Universe(mds_output_name)
         n_frames = len(u_check.trajectory)
         u_check.trajectory.close()
         del u_check
-        
+
         if n_frames < 3:
             raise RuntimeError(f"Insufficient frames in trajectory: {n_frames} (need at least 3)")
-        
+
         print(f"Trajectory contains {n_frames} frames")
-        
-        # Calculate frame-to-frame RMSD
-        rmsd_results = calculate_frame_to_frame_rmsd(mds_output_name, dt=reporting_dt_ps)
-        
-        time_array = rmsd_results['time']
-        rmsd_values = rmsd_results['rmsd']
 
-        # Estimate plateau point with validation
-        plateau_results = estimate_plateau_point(rmsd_values, time_array, 
-                                                 min_plateau_duration_ps=min_plateau_duration,
-                                                 pen_factor=2.0)
-        
-        plateau_index = plateau_results['mean_representative_index']
-        plateau_time = plateau_results['start_time']
+        # Relaxation curve — QC only (superposed RMSD vs frame 0)
+        relax = calculate_relaxation_rmsd(mds_output_name, dt=reporting_dt_ps)
+        time_array = relax['time']
+        rmsd_values = relax['rmsd']
 
-        # Plot RMSD with enhanced visualization
+        # Burn-in: discard the leading relaxation transient before sampling
+        burn_in_index = apply_burn_in(n_frames, BURN_IN_FRACTION)
+        burn_in_time = time_array[burn_in_index] if burn_in_index < len(time_array) else time_array[-1]
+
+        # Relaxation QC plot. The curve shows how far the structure moves from the
+        # starting model; it is descriptive only — no attempt is made to infer
+        # "equilibration", which is not achievable on this timescale.
         plt.figure(figsize=(10, 6))
-        plt.plot(time_array, rmsd_values, marker='o', label='Frame-to-Frame RMSD', linewidth=1.5)
-
-        # Add plateau indicators
-        plt.axvline(x=plateau_time, color='r', linestyle='--', 
-                   label=f'Equilibration Start: {plateau_time:.1f} ps')
-        plt.axvline(x=plateau_results['mean_representative_time'], color='b', 
-                   linestyle='--', label=f'Representative Frame: {plateau_results["mean_representative_time"]:.1f} ps')
-        plt.axhline(y=plateau_results['plateau_average'], 
-                color='g', linestyle='--', 
-                label=f'Plateau Mean: {plateau_results["plateau_average"]:.3f} Å')
-
-        # Add plateau region shading
-        plt.fill_between(time_array[plateau_results['start_index']:],
-                        plateau_results['plateau_average'] - plateau_results['plateau_std'],
-                        plateau_results['plateau_average'] + plateau_results['plateau_std'],
-                        color='g', alpha=0.2,
-                        label=f'Std Dev: ±{plateau_results["plateau_std"]:.3f} Å')
-
+        plt.plot(time_array, rmsd_values, marker='o', label='Cα RMSD vs frame 0 (superposed)', linewidth=1.5)
+        plt.axvline(x=burn_in_time, color='r', linestyle='--',
+                    label=f'Burn-in cutoff: {burn_in_time:.1f} ps ({int(BURN_IN_FRACTION*100)}%)')
         plt.xlabel("Time (ps)", fontsize=12)
-        plt.ylabel(r'Frame-to-Frame RMSD ($\AA$)', fontsize=12)
-        plt.title(f'Equilibration Analysis: {structure_name}', fontsize=14)
+        plt.ylabel(r'C$\alpha$ RMSD vs frame 0 ($\AA$)', fontsize=12)
+        plt.title(f'Relaxation QC: {structure_name}', fontsize=14)
         plt.legend(fontsize=9)
         plt.grid(alpha=0.3)
-        
-        # Save plot
         rmsd_plot_dir = os.path.join(output_dir, 'rmsd_plots')
         os.makedirs(rmsd_plot_dir, exist_ok=True)
-        rmsd_plot_name = os.path.join(rmsd_plot_dir, f'{structure_name}_equilibration.png')
+        rmsd_plot_name = os.path.join(rmsd_plot_dir, f'{structure_name}_relaxation.png')
         plt.savefig(rmsd_plot_name, dpi=300, bbox_inches='tight')
         plt.close()
 
-        print(f"\nEquilibration analysis for {structure_name}:")
-        print(f"  Representative frame time: {plateau_results['mean_representative_time']:.2f} ps")
-        print(f"  Plateau average RMSD: {plateau_results['plateau_average']:.3f} Å")
-        print(f"  Plateau std dev: {plateau_results['plateau_std']:.3f} Å")
-        print(f"  Plateau duration: {time_array[-1] - plateau_time:.2f} ps")
+        print(f"\nRelaxation QC for {structure_name}:")
+        print(f"  Final Cα RMSD vs start: {rmsd_values[-1]:.3f} Å")
+        print(f"  Burn-in discarded: first {burn_in_index} frame(s) (≈{burn_in_time:.1f} ps)")
+
+        # Pocket-RMSD matrix over post-burn-in frames → medoid ensemble selection
+        frame_pool, dmatrix = pocket_rmsd_matrix(
+            mds_output_name, binding_pocket_resids, original_resids, burn_in_index
+        )
+        medoid_local = select_medoids(dmatrix, N_ENSEMBLE)
+        medoid_frames = [frame_pool[i] for i in medoid_local]
+        diversity = intra_ensemble_diversity(dmatrix, medoid_local)
         
-        # Validate plateau_index is within bounds
-        if plateau_index >= n_frames:
-            print(f"Warning: Calculated plateau index {plateau_index} exceeds frame count {n_frames}")
-            plateau_index = n_frames - 1
-            print(f"Using last frame (index {plateau_index}) instead")
-        
-        # Extract single representative structure
-        equilibration_pdb_name = os.path.join(output_dir, os.path.basename(pdb_name))
-        u_eq = None
-        try:
-            u_eq = mda.Universe(mds_output_name)
-            u_eq.trajectory[plateau_index]
-            protein = u_eq.select_atoms("protein")
-            
-            # Use PDB writer with preserve option to keep original residue numbering
-            with mda.Writer(equilibration_pdb_name, protein.n_atoms) as W:
-                # If original resids provided, restore them before writing
-                if original_resids is not None:
-                    if len(original_resids) == len(protein.residues):
-                        protein.residues.resids = original_resids
-                    else:
-                        print(f"Warning: Original resid count ({len(original_resids)}) doesn't match "
-                              f"current residue count ({len(protein.residues)}). Using current numbering.")
-                W.write(protein)
-            
-            # Append ligand if requested
-            if preserve_ligand and ligand_name and original_pdb:
-                with open(original_pdb, 'r') as f:
-                    original_lines = f.readlines()
-                ligand_lines = [line for line in original_lines 
-                               if line.startswith('HETATM') and line[17:20].strip() == ligand_name]
-                
-                if ligand_lines:
-                    with open(equilibration_pdb_name, 'r') as f:
-                        protein_lines = f.readlines()
-                    
-                    # Insert ligand before TER/END
-                    insert_index = len(protein_lines)
-                    for idx, line in enumerate(protein_lines):
-                        if line.startswith('TER') or line.startswith('END'):
-                            insert_index = idx
-                            break
-                    
-                    new_lines = protein_lines[:insert_index] + ligand_lines + protein_lines[insert_index:]
-                    
-                    with open(equilibration_pdb_name, 'w') as f:
-                        f.writelines(new_lines)
-                    
-                    print(f"  Ligand {ligand_name} preserved in equilibrated structure")
-            
-            print(f"  Extracted representative structure: {os.path.basename(equilibration_pdb_name)}")
-        finally:
-            if u_eq is not None:
-                u_eq.trajectory.close()
-                del u_eq
-        
-        # Extract ensemble if requested
-        ensemble_files = []
-        if extract_ensemble and n_ensemble > 1:
-            print(f"\nExtracting ensemble of {n_ensemble} structures from plateau...")
-            ensemble_files = extract_ensemble_structures(
-                mds_output_name, 
-                output_dir, 
-                pdb_name,
-                plateau_results['start_index'],
-                n_structures=n_ensemble,
-                original_resids=original_resids,
-                preserve_ligand=preserve_ligand,
-                ligand_name=ligand_name,
-                original_pdb=original_pdb
-            )
-            print(f"  Extracted {len(ensemble_files)} ensemble structures")
+        # Write the medoid ensemble. These cluster medoids replace both the old
+        # single representative and the linspace-over-plateau ensemble: each test
+        # structure is now represented by N_ENSEMBLE diverse, relaxed conformations.
+        print(f"\nExtracting {len(medoid_frames)}-structure ensemble (cluster medoids)...")
+        ensemble_files = extract_ensemble_structures(
+            mds_output_name,
+            output_dir,
+            pdb_name,
+            medoid_frames,
+            original_resids=original_resids,
+            preserve_ligand=preserve_ligand,
+            ligand_name=ligand_name,
+            original_pdb=original_pdb,
+            align_reference=processed_filename,
+        )
+        print(f"  Extracted {len(ensemble_files)} ensemble structure(s) from frames {medoid_frames}")
+        print(f"  Intra-ensemble diversity (mean pairwise pocket RMSD): {diversity:.3f} Å")
+        if diversity < LOW_DIVERSITY_RMSD:
+            print(f"  ⚠ Low diversity (< {LOW_DIVERSITY_RMSD} Å): pocket is effectively rigid; "
+                  f"ensemble members are near-duplicates")
 
         # Perform RMSF analysis if requested
         rmsf_data = None
@@ -941,11 +949,13 @@ def run_mds(processed_filename, output_dir, mds_time=None, extract_ensemble=Fals
 
         # Return comprehensive results
         return {
+            'structure_name': structure_name,
             'mds_trajectory': mds_output_name,
-            'equilibration_time': plateau_time,
-            'equilibration_structure': equilibration_pdb_name,
+            'burn_in_index': burn_in_index,
+            'burn_in_time': burn_in_time,
             'ensemble_structures': ensemble_files,
-            'plateau_stats': plateau_results,
+            'ensemble_frames': medoid_frames,
+            'ensemble_diversity': diversity,
             'rmsf_data': rmsf_data
         }
 
@@ -974,7 +984,7 @@ def prep_receptors():
     5. For test structures: analyze binding pocket flexibility via RMSF
     """
     # Set working directory
-    pdb_dir = input("Enter the path to the directory containing the PDB files: ")
+    pdb_dir = input("Enter the path to the directory containing the aligned PDB files: ")
     while not os.path.exists(pdb_dir):
         pdb_dir = input(
             "That path does not appear to exist.\nPlease enter the path to "
@@ -999,15 +1009,13 @@ def prep_receptors():
     if ref_candidates:
         print(f"\nFound {len(ref_candidates)} file(s) starting with 'ref_':")
         for candidate in ref_candidates:
-            confirm = input(f"Is {candidate} the reference PDB file? (y/n): ").lower().strip()
-            if confirm == 'y':
+            if prompt_yes_no(f"Is {candidate} the reference PDB file? (y/n): "):
                 ref_name = candidate
                 break
-        
+
         if not ref_name:
             print("No reference structure selected from candidates.")
-            manual_ref = input("Would you like to manually specify a reference structure? (y/n): ").lower().strip()
-            if manual_ref == 'y':
+            if prompt_yes_no("Would you like to manually specify a reference structure? (y/n): "):
                 ref_name = input("Enter the name of the reference structure: ")
                 if not ref_name.endswith(".pdb"):
                     ref_name += ".pdb"
@@ -1016,8 +1024,7 @@ def prep_receptors():
                     ref_name = None
     else:
         # No ref_ files found, ask user
-        has_ref = input("Is there a reference structure (with ligand bound) in the specified PDB directory? (y/n): ").lower().strip()
-        if has_ref == 'y':
+        if prompt_yes_no("Is there a reference structure (with ligand bound) in the specified PDB directory? (y/n): "):
             ref_name = input("Enter the name of the reference structure: ")
             if not ref_name.endswith(".pdb"):
                 ref_name += ".pdb"
@@ -1028,10 +1035,29 @@ def prep_receptors():
     # If we have a reference, get ligand info and identify binding pocket
     if ref_name:
         ref_path = os.path.join(pdb_dir, ref_name)
-        
-        # Ask for ligand name for binding pocket identification
-        ref_ligand = input("Enter the 3-letter ligand code in the reference structure: ").strip()
-        
+
+        # Detect candidate ligand residue names from the reference HETATM records
+        # and let the user pick one, rather than typing it blind.
+        candidates = list_hetatm_ligands(ref_path)
+        if candidates:
+            print(f"\nHETATM residues found in {ref_name} (largest first):")
+            for i, (resname, n_atoms) in enumerate(candidates, 1):
+                print(f"  [{i}] {resname}  ({n_atoms} atoms)")
+            print("  [m] Enter a residue name manually")
+            while True:
+                choice = input("Select the reference ligand (number, or 'm'): ").strip().lower()
+                if choice == "m":
+                    ref_ligand = input("Enter the 3-letter ligand code: ").strip()
+                    break
+                if choice.isdigit() and 1 <= int(choice) <= len(candidates):
+                    ref_ligand = candidates[int(choice) - 1][0]
+                    break
+                print("  Invalid selection, please try again.")
+        else:
+            print(f"\nNo HETATM records found in {ref_name}.")
+            ref_ligand = input("Enter the 3-letter ligand code in the reference structure: ").strip()
+        print(f"  Using reference ligand: {ref_ligand}")
+
         # Identify binding pocket residues
         print(f"\nIdentifying binding pocket residues in {ref_name}...")
         binding_pocket_resids = get_binding_pocket_residues(ref_path, ref_ligand)
@@ -1049,7 +1075,7 @@ def prep_receptors():
     
     print(f"\nFound {len(test_pdb_files)} test structure(s) and {1 if ref_name else 0} reference structure")
     
-    perform_mds = input("Do you want to perform Molecular Dynamics Simulation? (y/n): ").lower().strip() == 'y'
+    perform_mds = prompt_yes_no("Perform a short (200 ps) Molecular Dynamics Simulation for structure relaxation? (y/n): ")
 
     if not perform_mds:
         # Just run PDBFixer
@@ -1089,27 +1115,18 @@ def prep_receptors():
         print("\nAll PDB files have been processed with PDBFixer.")
         return results
     
-    # MD simulation parameters
-    save_trajectories = input(f"Do you want to save the MDS trajectory files? (y/n): ").lower().strip() == 'y'
-    
-    mds_time = input("Enter the total simulation time in ps (suggest 100-500 ps): ")
-    while not mds_time.isdigit() or int(mds_time) < 100 or int(mds_time) > 1000:
-        mds_time = input("Please enter a valid time (100-1000 ps): ")
-    mds_time = int(mds_time)
-    
-    # Test structure flexibility analysis
-    analyze_test_flexibility = False
-    if binding_pocket_resids:
-        analyze_test_flexibility = input("Perform RMSF flexibility analysis on test structures' binding pockets? (y/n): ").lower().strip() == 'y'
+    # MD simulation parameters.
+    # The simulation length, ensemble size, and flexibility analysis are no longer
+    # user-tunable: the protocol is standardized (fixed MDS_TIME_PS, N_ENSEMBLE medoid
+    # structures, flexibility profiling always on) for reproducibility. The only
+    # remaining choice is whether to keep the (large) trajectory files.
+    save_trajectories = prompt_yes_no("Do you want to save the MDS trajectory files? (y/n): ")
 
-    # Test structure ensemble extraction
-    extract_test_ensemble = input("Do you want to save ensemble structures from test trajectories? (y/n): ").lower().strip() == 'y'
-    n_test_ensemble = 1
-    if extract_test_ensemble:
-        n_ensemble_input = input("How many ensemble structures to extract per test structure? (suggest 3-5): ")
-        while not n_ensemble_input.isdigit() or int(n_ensemble_input) < 2 or int(n_ensemble_input) > 10:
-            n_ensemble_input = input("Please enter a valid number (2-10): ")
-        n_test_ensemble = int(n_ensemble_input)
+    # Flexibility profiling is always performed when a binding pocket is available.
+    analyze_test_flexibility = bool(binding_pocket_resids)
+
+    print(f"\nStandardized MD protocol: {MDS_TIME_PS} ps, {N_ENSEMBLE} medoid ensemble "
+          f"structures per receptor, seed={INTEGRATOR_SEED}.")
 
     results = []
     
@@ -1169,11 +1186,9 @@ def prep_receptors():
             
             processed_filename, original_resids = run_pdbfixer(full_path, output_dir)
             result = run_mds(
-                processed_filename, 
-                output_dir, 
-                mds_time,
-                extract_ensemble=extract_test_ensemble,
-                n_ensemble=n_test_ensemble,
+                processed_filename,
+                output_dir,
+                MDS_TIME_PS,
                 original_resids=original_resids,
                 analyze_flexibility=analyze_test_flexibility,
                 binding_pocket_resids=binding_pocket_resids,
@@ -1227,7 +1242,7 @@ def prep_receptors():
         for result in flex_analyzed:
             if result.get('rmsf_data'):
                 rmsf_data = result['rmsf_data']
-                structure = os.path.basename(result['equilibration_structure']).replace('.pdb', '')
+                structure = result['structure_name']
                 print(f"  {structure}: {len(rmsf_data['flexible_residues'])} flexible residues")
         
         # Create consolidated flexible residues summary file

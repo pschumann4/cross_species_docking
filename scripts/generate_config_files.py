@@ -4,43 +4,20 @@ import numpy as np
 from collections import defaultdict
 import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from utils import euclidean3d, centroid
+from utils import euclidean3d, centroid, prompt_yes_no
+
+# Cubic Vina grid box side length as a multiple of the ligand's maximum radius
+# from its centroid. 4× fully encloses the ligand with padding for rotational
+# and translational sampling during docking.
+GRIDBOX_RADIUS_MULTIPLIER = 4
 
 
 def calculate_gridbox_from_pdb(pdb_file, ligand_resname):
     """
-    Calculate gridbox parameters directly from a reference PDB file containing a ligand.
-    
-    METHODOLOGY:
-    ------------
-    1. Extract all HETATM coordinates for the specified ligand
-    2. Calculate the ligand centroid (geometric center of all ligand atoms)
-    3. Find the maximum distance from centroid to any ligand atom (ligand radius)
-    4. Set grid box size as 4× this maximum radius in all dimensions (cubic)
-    5. Center the grid box at the ligand centroid coordinates
-
-    SCIENTIFIC RATIONALE:
-    ---------------------
-    The 4× multiplier ensures the grid box fully encompasses the ligand with adequate
-    padding for rotational and translational sampling during docking. This approach:
-    - Captures the native binding pose completely
-    - Allows conformational flexibility during docking
-    - Provides consistent grid sizing across different ligand geometries
-    - Produces a cubic box guaranteed to be large enough in every direction
-    
-    Parameters:
-    -----------
-    pdb_file : str
-        Path to PDB file containing the protein-ligand complex
-    ligand_resname : str
-        Three-letter residue name of the ligand (e.g., 'ATP', 'HEM')
-    
-    Returns:
-    --------
-    dict : Gridbox parameters with keys:
-        'size_x', 'size_y', 'size_z' : Grid dimensions (Angstroms, all equal)
-        'center_x', 'center_y', 'center_z' : Grid center coordinates
-    None : If ligand not found or error occurs
+    Compute a cubic Vina gridbox from the reference ligand: centered on the ligand
+    centroid, with side = GRIDBOX_RADIUS_MULTIPLIER × the max centroid-to-atom distance
+    (enough padding to enclose the pose and allow sampling). Returns a dict of
+    size_x/y/z + center_x/y/z, or None if the ligand isn't found.
     """
     ligand_coords = []
     
@@ -69,13 +46,13 @@ def calculate_gridbox_from_pdb(pdb_file, ligand_resname):
 
     coords_arr = np.array(ligand_coords)
 
-    # Calculate ligand centroid (geometric centre)
+    # Calculate ligand centroid (geometric center)
     ligand_centroid = centroid(ligand_coords)
     print(f"Ligand centroid: [{ligand_centroid[0]:.3f}, {ligand_centroid[1]:.3f}, {ligand_centroid[2]:.3f}]")
 
     # Calculate grid box dimensions
     max_radius = max(euclidean3d(ligand_centroid, coord) for coord in ligand_coords)
-    size = round(4 * max_radius, 3)
+    size = round(GRIDBOX_RADIUS_MULTIPLIER * max_radius, 3)
     size_x = size_y = size_z = size
 
     print(f"Max ligand radius: {max_radius:.3f} Å")
@@ -286,7 +263,16 @@ def get_config_files():
         print(f"Error: pdbqt_files/ not found at {pdbqt_dir}")
         print("Please run prep_pdbqt.py first.")
         return
-    os.chdir(pdbqt_dir)
+    # pushd makes pdbqt_dir the working directory (config files are written by
+    # basename below) and restores the original directory on exit, including the
+    # early-return error paths inside the helper.
+    from utils import pushd
+    with pushd(pdbqt_dir):
+        _generate_configs(project_dir, config, paths, pdbqt_dir)
+
+
+def _generate_configs(project_dir, config, paths, pdbqt_dir):
+    from utils import save_config, resolve_reference_pdb
 
     # ── Ligand name ──────────────────────────────────────────────────────────
     ligand_name = config.get("ligand_name")
@@ -298,8 +284,7 @@ def get_config_files():
             ligand_name = None
 
     if not ligand_name:
-        same_dir = input("Is the ligand PDBQT file in the 'pdbqt_files' directory? (y/n): ").lower()
-        if same_dir == "n":
+        if not prompt_yes_no("Is the ligand PDBQT file in the 'pdbqt_files' directory? (y/n): "):
             ligand_path = input("Enter the path to the ligand PDBQT file: ").strip('"')
             while not os.path.exists(ligand_path):
                 ligand_path = input("That path does not appear to exist.\nPlease enter the path to the ligand PDBQT file: ").strip('"')
@@ -359,7 +344,7 @@ def get_config_files():
                 if len(pdb_candidates) == 1:
                     candidate = os.path.join(project_dir, pdb_candidates[0])
                     print(f"\nFound reference PDB: {pdb_candidates[0]}")
-                    if input("Use this file? (y/n): ").lower() == 'y':
+                    if prompt_yes_no("Use this file? (y/n): "):
                         reference_pdb = candidate
 
             while reference_pdb is None:
@@ -493,12 +478,7 @@ def get_config_files():
         print(f"Grid box center: ({gridbox_params['center_x']}, {gridbox_params['center_y']}, {gridbox_params['center_z']})")
         print("="*60)
 
-        confirm = input("\nIs this information correct? (y/n): ").lower()
-        while confirm not in ["y", "n"]:
-            print("Invalid input.")
-            confirm = input("Is this information correct? (y/n): ").lower()
-
-        if confirm == "y":
+        if prompt_yes_no("\nIs this information correct? (y/n): "):
             config["docking"] = {
                 "scoring": scoring,
                 "num_modes": num_modes,

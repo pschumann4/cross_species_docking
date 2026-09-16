@@ -1,17 +1,12 @@
 """
- This script is used to update the residue numbers of multiple proteins using a               
- multiple sequence alignment (MUSCLE) and to update the protein coordinates using 
- structural alignments via PyMOL. Additionally, this function will remove extraneous 
- chains from the PDB files and remove duplicate atoms, if requested. The aligned 
- structures will also be trimmed to include only the residues that are aligned 
- to the reference structure (+10 residue buffer at each terminus).                                                       
- The script will output a text file containing the RMSD values for each structure
- as well as a csv file containing the original residue numbers and the new residue 
- numbers. Lastly, the aligned and modified structures will be saved as PDB files 
- along with copies of the original PDB files.                                                                   
-                                                                                              
- The user will need to have PyMOL installed on their computer and have the MUSCLE 
- executable added to their PATH as "muscle".                                                             
+Align multiple protein structures to the reference: renumber residues from a MUSCLE
+multiple sequence alignment, structurally superpose via PyMOL, remove extraneous chains
+(and optionally duplicate atoms), and trim each structure to the aligned region
+(+10-residue buffer per terminus).
+
+Outputs: per-structure RMSD values (txt), an original→new residue-number mapping (csv),
+and the modified PDBs alongside copies of the originals. Requires PyMOL and the MUSCLE
+executable on PATH as "muscle".
 """
 
 import os
@@ -19,7 +14,7 @@ import sys
 import shutil
 import subprocess
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from utils import check_tools
+from utils import check_tools, prompt_yes_no
 
 import pandas as pd
 from Bio import AlignIO
@@ -461,13 +456,9 @@ def remove_chains(pdb, keep_chain=None):
     write_filtered_pdb(lines, keep_chains)
     
     # Ask about using same chain ID for all structures
-    while True:
-        same_chain = input("Would you like to use the same chain ID for all structures? (y/n): ").lower()
-        if same_chain in ["y", "n"]:
-            break
-        print("Invalid input. Please enter 'y' or 'n'.")
-    
-    return keep_chains if same_chain == "y" else None
+    return keep_chains if prompt_yes_no(
+        "Would you like to use the same chain ID for all structures? (y/n): "
+    ) else None
 
 def remove_duplicates(pdb):
     """
@@ -599,12 +590,7 @@ def multiple_prot_align():
                 remove_chains(os.path.join(pwd, pdb_file), keep_chain=keep_chain)
 
     # Run the remove_duplicates function
-    rmv_dups = input("Would you like to remove duplicate atoms from the PDB files (y/n)?: ").lower()
-    while rmv_dups not in ["y", "n"]:
-        print("Invalid input. Please enter 'y' or 'n'.")
-        rmv_dups = input("Would you like to remove duplicate atoms from the PDB files (y/n)?: ").lower()
-
-    if rmv_dups.lower() == "y":
+    if prompt_yes_no("Would you like to remove duplicate atoms from the PDB files (y/n)?: "):
         print("Removing any duplicate atoms from the PDB files...\n")
         for pdb_file in os.listdir(pwd):
             if pdb_file.endswith(".pdb"):

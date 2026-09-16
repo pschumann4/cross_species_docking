@@ -1,16 +1,7 @@
 """
-Integrated workflow for binding pocket extraction and structural alignment.
-
-The functions in this script perform the following steps:
-1. Extract binding pocket structures from protein-ligand complexes
-2. Perform structural alignment using PPSalign to compare pockets
-
-Workflow:
-    - Extract binding pockets from a directory of PDB files
-    - Identify a reference pocket structure
-    - Compare all extracted pockets to the reference using PPSalign
-    - Output similarity scores for cross-species comparison
-
+Binding-pocket extraction + structural alignment: extract each complex's pocket, then
+compare every pocket to the reference with PPSalign to produce cross-species similarity
+(PPS) scores.
 """
 
 import os
@@ -340,7 +331,7 @@ def run_ppsalign(query_poc, template_poc, output_file):
     except FileNotFoundError:
         print("Error: PPSalign command not found. Make sure it's in your PATH.")
         return False
-    except Exception as e:
+    except (OSError, subprocess.SubprocessError) as e:
         print(f"Error running PPSalign: {e}")
         return False
 

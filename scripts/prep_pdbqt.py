@@ -187,7 +187,7 @@ def format_flexible_residues(pdb_file, residue_ids):
 def main():
     import sys
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from utils import resolve_project_dir, get_project_paths
+    from utils import resolve_project_dir, get_project_paths, pushd
 
     project_dir = resolve_project_dir()
     paths = get_project_paths(project_dir)
@@ -198,7 +198,13 @@ def main():
         print("Please run mds_structure_prep.py first.")
         return
 
-    os.chdir(pdb_dir)
+    # pushd makes pdb_dir the working directory (prepare_receptor and the PDBQT
+    # move below operate on basenames) and restores the original on exit.
+    with pushd(pdb_dir):
+        _prepare_receptors(pdb_dir, paths)
+
+
+def _prepare_receptors(pdb_dir, paths):
     pdb_files = [f for f in os.listdir(pdb_dir) if f.endswith(".pdb")]
     print(f"\nFound {len(pdb_files)} PDB file(s)")
 

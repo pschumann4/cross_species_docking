@@ -142,6 +142,8 @@ python get_test_strucs.py
 
 This produces three outputs: `orthodb_orthologs.csv`, `alphafold_metadata.csv`, and an `af_structures/` directory containing the downloaded PDB files.
 
+Models with a mean pLDDT at or below 50 (AlphaFold's "very low confidence" band, on the 0–100 pLDDT scale) are automatically skipped — they are neither downloaded nor recorded in the metadata CSV.
+
 After downloading, manually inspect the structure set for cases where a single species has multiple predicted structures. In these cases, retain the structure with the highest pLDDT confidence score and most relevant description.
 
 **REQUIRED — File naming convention**
@@ -195,15 +197,19 @@ Outputs include a set of modified PDB files, a `results/` folder with alignment 
 
 ### Step 4: Prepare structures with molecular dynamics simulation
 
-Run `mds_structure_prep.py` to clean each structure using PDBFixer (adding missing atoms and resolving common structural issues), then run a short molecular dynamics simulation using OpenMM with the AMBER14 force field to equilibrate each structure and identify flexible binding pocket residues:
+Run `mds_structure_prep.py` to clean each structure using PDBFixer (adding missing atoms and resolving common structural issues), then run a short, seeded molecular dynamics simulation using OpenMM with the AMBER14 force field to relax each predicted structure, profile binding-pocket flexibility, and sample a small conformational ensemble:
 
 ```
 python mds_structure_prep.py
 ```
 
-Equilibration is detected automatically using changepoint analysis (PELT algorithm). The recommended simulation length is 100–500 ps; shorter simulations run faster but may not fully capture conformational flexibility. You will also have the option to extract an ensemble of structures from the equilibrated plateau region, which can improve docking accuracy by sampling a range of conformational states.
+The protocol runs a fixed **200 ps** simulation with a fixed integrator seed. The leading **25%** of frames are discarded as a relaxation burn-in (i.e., shedding predicted-model geometry), and an ensemble of **5 cluster medoids** (selected by binding-pocket RMSD from the remaining frames) is extracted per receptor. RMSF over the trajectory identifies flexible binding-pocket residues for flexible-residue docking.
 
-Outputs include fixed PDB files, per-structure RMSF plots with flexible residues highlighted, a summary of flexible residues for each structure, and (if ensemble extraction is enabled) a set of equilibrated structures.
+**Scope:** this step performs relaxation, flexibility profiling, and *within-basin* conformational sampling. It does **not** detect thermodynamic equilibrium and does not reach distinct conformational macrostates on this timescale. The ensemble captures thermal flexibility around the relaxed model, which provides within-species variability.
+
+Outputs include fixed PDB files, a per-structure relaxation QC plot, RMSF plots with flexible residues highlighted, a summary of flexible residues, and 5 medoid ensemble structures per receptor.
+
+**Note on the reference structure:** the empirical reference is preserved unchanged as the `ref_`-prefixed copy (used as the docking/comparison anchor); a duplicate non-prefixed copy flows through this MD step like any test structure, so the reference species is evaluated the same as all others.
 
 ---
 
@@ -245,12 +251,12 @@ Ensure the prepared ligand PDBQT file is in the `pdbqt_files/` folder, then run:
 python run_vina_batch.py
 ```
 
-This script handles the complete post-docking workflow in one step: it runs AutoDock Vina for all configuration files, selects the pose with the lowest RMSD relative to the reference ligand (using the Hungarian algorithm for optimal atom matching), converts the selected pose to PDB format, and writes a summary of results.
+This script handles the complete post-docking workflow in one step: it runs AutoDock Vina for all configuration files, keeps Vina's rank-1 (best-scored) pose for each receptor, converts that pose to PDB format, and writes a summary of results. All four downstream metrics — binding affinity, ligand RMSD, PLIF Tanimoto, and PPS-score — are derived from this same rank-1 pose so that they describe one binding event. Ligand RMSD relative to the reference is computed with the Hungarian algorithm for optimal atom matching. The pose with the lowest RMSD to the reference is also recorded as a diagnostic (`best_rmsd_*` columns, plus a `pose_divergence` flag that is `True` when Vina's top pose is not the most reference-like one), but it is not used for any reported metric.
 
 Outputs:
-- `docking_results/` — Vina output PDBQT files for the selected pose per receptor
+- `docking_results/` — Vina output PDBQT files for the rank-1 pose per receptor
 - `docking_results/models/` — combined PDB models (protein + ligand) for each docked complex
-- `results/docking_scores.csv` — binding affinities and ligand RMSD values for all receptors
+- `results/docking_scores.csv` — rank-1 binding affinity and ligand RMSD per receptor, plus best-RMSD diagnostic columns
 
 ---
 

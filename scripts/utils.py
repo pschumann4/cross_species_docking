@@ -2,10 +2,75 @@
 Shared utility functions for the cross-species docking pipeline.
 """
 import os
+import sys
 import json
 import shutil
+import contextlib
 import numpy as np
 from scipy.optimize import linear_sum_assignment
+
+# ---------------------------------------------------------------------------
+# Console / filesystem helpers
+# ---------------------------------------------------------------------------
+
+
+def enable_utf8_console():
+    """
+    Reconfigure stdout/stderr to UTF-8 so the pipeline's ✓/✖/⚠ status glyphs
+    do not raise UnicodeEncodeError on legacy Windows consoles (cp1252).
+
+    Safe and idempotent: does nothing on interpreters without reconfigure()
+    and never raises.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            try:
+                reconfigure(encoding="utf-8")
+            except (ValueError, OSError):
+                pass
+
+
+# Apply on import so every entry point (all of which import utils) is covered
+# without each script needing to call it explicitly.
+enable_utf8_console()
+
+
+def prompt_yes_no(question, default=None):
+    """
+    Ask a yes/no question, re-prompting until the user gives a valid answer.
+
+    Accepts y / yes / n / no (case-insensitive). If `default` is 'y' or 'n',
+    pressing Enter (empty input) selects that default; otherwise empty input is
+    rejected and the question is re-asked. Returns True for yes, False for no.
+    """
+    while True:
+        answer = input(question).strip().lower()
+        if not answer and default in ("y", "n"):
+            return default == "y"
+        if answer in ("y", "yes"):
+            return True
+        if answer in ("n", "no"):
+            return False
+        print("  Please enter 'y' or 'n'.")
+
+
+@contextlib.contextmanager
+def pushd(target_dir):
+    """
+    Context manager that temporarily changes the working directory and always
+    restores the original on exit, even if the body raises.
+
+    Replaces bare os.chdir() calls that otherwise leave the process in a
+    different directory when a script returns or errors mid-run.
+    """
+    original = os.getcwd()
+    os.chdir(target_dir)
+    try:
+        yield target_dir
+    finally:
+        os.chdir(original)
+
 
 # ---------------------------------------------------------------------------
 # Project config helpers
@@ -82,8 +147,7 @@ def resolve_project_dir(hint=None):
     found = find_project_dir(hint)
     if found:
         print(f"\nFound project directory: {found}")
-        ans = input("Use this? (y/n): ").lower().strip()
-        if ans == "y":
+        if prompt_yes_no("Use this? (y/n): "):
             return found
 
     while True:
